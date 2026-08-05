@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guild Roster · Core 1</title>
+  <link rel="stylesheet" href="css/style.css?v=41" />
+</head>
+<body>
+<div class="groster">
+  <div class="header-row">
+    <div>
+      <div class="eyebrow">Core 1 · Roster</div>
+      <input class="guild-name-input" id="guildName" type="text" value="My Guild" />
+    </div>
+    <div class="summary-stats">
+      <div class="stat"><span class="val" id="statMembers">0</span><span class="label">Members</span></div>
+      <div class="stat">
+        <span class="val" id="statAvg">–</span><span class="label" title="Excludes healers — uwu-logs.xyz only tracks damage, not HPS">Avg. points</span>
+        <div class="core-avg-breakdown" id="coreAvgBreakdown"></div>
+      </div>
+      <div class="stat"><span class="val" id="statBest">–</span><span class="label" title="Excludes healers — uwu-logs.xyz only tracks damage, not HPS">Best server rank</span></div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="field server-field">
+      <label for="serverInput">Server</label>
+      <input type="text" id="serverInput" placeholder="Onyxia" />
+    </div>
+    <div class="field name-field">
+      <label for="nameInput">Character</label>
+      <input type="text" id="nameInput" placeholder="Yongii" />
+    </div>
+    <div class="field">
+      <label for="classInput">Class</label>
+      <select id="classInput" title="Only used to show real spec names below — the actual class is auto-detected once the character loads.">
+        <option value="">— Choose class (optional) —</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="specInput">Spec</label>
+      <select id="specInput">
+        <option value="">Auto (detect best)</option>
+      </select>
+    </div>
+    <div class="field core-field">
+      <label for="coreInput">Core</label>
+      <input type="text" id="coreInput" list="coreListOptions" placeholder="Core 1" value="Core 1" />
+      <datalist id="coreListOptions"></datalist>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button id="addBtn">Add to roster</button>
+    </div>
+    <div class="field" style="margin-left: auto;">
+      <label>&nbsp;</label>
+      <button class="secondary" id="refreshBtn">Refresh all</button>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="secondary" id="downloadBtn">Download CSV</button>
+    </div>
+  </div>
+
+  <div class="view-tabs" id="viewTabs">
+    <button class="view-tab active" data-view="roster" type="button">Roster</button>
+    <button class="view-tab" data-view="boss" type="button">Boss ranking</button>
+  </div>
+
+  <div id="rosterSection">
+  <div class="roster-filters">
+    <div class="field">
+      <label for="coreFilterSelect">Cores</label>
+      <select id="coreFilterSelect">
+        <option value="__ALL__">All</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="roleFilterSelect">Role</label>
+      <select id="roleFilterSelect">
+        <option value="__ALL__">All roles</option>
+        <option value="Damage">Damage</option>
+        <option value="Healing">Healing</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="classFilterSelect">Class</label>
+      <select id="classFilterSelect">
+        <option value="">All classes</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="specFilterSelect">Spec</label>
+      <select id="specFilterSelect" disabled>
+        <option value="">All specs</option>
+      </select>
+    </div>
+    <button class="secondary" id="clearFiltersBtn" type="button">Clear filters</button>
+  </div>
+
+  <details id="bulk-add-wrap">
+    <summary>Add several characters at once</summary>
+    <div class="bulk-add">
+      <div class="field bulk-core-field">
+        <label for="bulkCoreInput">Target core</label>
+        <input type="text" id="bulkCoreInput" list="coreListOptions" placeholder="Core 1" value="Core 1" />
+      </div>
+      <p class="bulk-help">One character per line: <code>Name</code> or <code>Name Spec</code> (separated by space or comma). If you don't set a spec, it's auto-detected (whichever has the most points). E.g.: <code>Yongii</code> or <code>Yongii 3</code>. All get added to the Core selected above.</p>
+      <textarea id="bulkInput" rows="6" placeholder="Yongii&#10;OtherName 1&#10;Another,2"></textarea>
+      <div class="bulk-actions">
+        <button id="bulkAddBtn">Add all</button>
+        <span id="bulkResult" class="bulk-result"></span>
+      </div>
+    </div>
+  </details>
+
+  <div class="roster-list">
+    <div class="row-head">
+      <div>#</div>
+      <div>Character</div>
+      <div>Spec</div>
+      <div>Score (guild)</div>
+      <div>Server rank</div>
+      <div></div>
+    </div>
+    <div id="rosterBody"></div>
+  </div>
+  </div>
+
+  <div id="bossSection" style="display:none;">
+    <div class="boss-view-controls">
+      <div class="field">
+        <label for="bossPhaseFilterSelect">Phase</label>
+        <select id="bossPhaseFilterSelect">
+          <option value="">All phases</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="bossRaidFilterSelect">Raid</label>
+        <select id="bossRaidFilterSelect">
+          <option value="">All raids</option>
+        </select>
+      </div>
+      <div class="field boss-scope-field">
+        <label for="bossScopeSelect">View</label>
+        <select id="bossScopeSelect">
+          <option value="__ALL__">Full raid (all bosses)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="bossClassFilterSelect">Clase</label>
+        <select id="bossClassFilterSelect">
+          <option value="">All classes</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="bossSpecFilterSelect">Spec</label>
+        <select id="bossSpecFilterSelect" disabled>
+          <option value="">All specs</option>
+        </select>
+      </div>
+      <button class="secondary" id="clearBossClassFilterBtn" type="button">Clear</button>
+    </div>
+    <div id="bossViewBody"></div>
+  </div>
+
+  <div id="playerSection" style="display:none;">
+    <button class="secondary" id="backFromProfileBtn" type="button">← Back</button>
+    <div id="playerProfileBody"></div>
+  </div>
+
+  <div id="analysisSection" style="display:none;">
+    <button class="secondary" id="backFromAnalysisBtn" type="button">← Back</button>
+    <div id="analysisBody"></div>
+  </div>
+
+  <div class="footnote" id="lastUpdated"></div>
+  <div class="footnote build-version">build v46</div>
+</div>
+
+  <div id="refreshProgressOverlay" class="refresh-overlay" style="display:none; position:fixed; inset:0; top:0; left:0; right:0; bottom:0; width:100%; height:100%; background:rgba(10,10,12,0.72); align-items:center; justify-content:center; z-index:1000;">
+    <div class="refresh-modal" style="background:#1c1e24; border:1px solid #2f323c; border-radius:10px; padding:24px 28px; width:320px; max-width:90vw; box-shadow:0 12px 40px rgba(0,0,0,0.5); font-family:'IBM Plex Mono',monospace;">
+      <div class="refresh-modal-title" style="color:#e9e5dc; font-size:14px; font-weight:600; margin-bottom:14px; text-align:center;">Refreshing roster…</div>
+      <div class="refresh-progress-bar-track" style="width:100%; height:10px; border-radius:6px; background:#22242b; border:1px solid #2f323c; overflow:hidden;">
+        <div class="refresh-progress-bar-fill" id="refreshProgressFill" style="width:0%; height:100%; background:linear-gradient(90deg,#8a6427,#e8a33d); transition:width 0.2s ease;"></div>
+      </div>
+      <div class="refresh-progress-text" id="refreshProgressText" style="margin-top:10px; text-align:center; color:#e9e5dc; font-size:13px;">0 / 0 (0%)</div>
+      <div class="refresh-progress-sub" id="refreshProgressSub" style="margin-top:4px; text-align:center; color:#9a9fab; font-size:11px;">0 validated · 0 failed</div>
+    </div>
+  </div>
+
+  <script src="js/app.js?v=45"></script>
+</body>
+</html>

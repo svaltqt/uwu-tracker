@@ -1,0 +1,1035 @@
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #14151a;
+    --panel: #1c1e24;
+    --panel-alt: #22242b;
+    --border: #2f323c;
+    --text: #e9e5dc;
+    --text-dim: #9a9fab;
+    --gold: #e8a33d;
+    --gold-dim: #8a6427;
+    --teal: #4fd1c5;
+    --danger: #d9534f;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+  margin: 0;
+  padding: 0;
+  background: #14151a;
+  min-height: 100vh;
+}
+
+.groster {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    padding: 28px 20px 60px;
+    min-height: 100%;
+    border-radius: 14px;
+  }
+
+  .groster h1, .groster h2, .groster h3 {
+    font-family: 'Oswald', sans-serif;
+    letter-spacing: 0.02em;
+    margin: 0;
+  }
+
+  .groster .eyebrow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 6px;
+  }
+
+  .groster .header-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+  }
+
+  .groster h1 {
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .groster .guild-name-input {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid var(--gold-dim);
+    color: var(--text);
+    font-family: 'Oswald', sans-serif;
+    font-size: 30px;
+    font-weight: 700;
+    padding: 2px 0;
+    outline: none;
+    max-width: 420px;
+    width: 100%;
+  }
+  .groster .guild-name-input:focus {
+    border-bottom-color: var(--gold);
+  }
+
+  .groster .summary-stats {
+    display: flex;
+    gap: 28px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .groster .stat { text-align: right; }
+  .groster .stat .val { font-size: 22px; font-weight: 600; color: var(--gold); display: block; }
+  .groster .stat .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; }
+
+  .groster .core-avg-breakdown {
+    margin-top: 6px;
+    font-size: 11px;
+  }
+  .groster .core-avg-line {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--text-dim);
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  .groster .core-avg-line span:last-child { color: var(--text); font-weight: 600; min-width: 46px; text-align: right; }
+
+  .groster .toolbar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+
+  .groster .toolbar label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .groster input[type="text"], .groster select {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+  }
+  .groster input[type="text"]:focus, .groster select:focus, .groster button:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 1px;
+  }
+
+  .groster .field { display: flex; flex-direction: column; }
+  .groster .server-field input { width: 160px; }
+  .groster .name-field input { width: 180px; }
+  .groster .core-field input { width: 130px; }
+  .groster .bulk-core-field { margin-bottom: 10px; }
+  .groster .bulk-core-field input { width: 160px; }
+
+  .groster .view-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .groster .view-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font-family: 'Oswald', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    padding: 10px 4px;
+    margin-bottom: -1px;
+    cursor: pointer;
+    border-radius: 0;
+  }
+  .groster .view-tab + .view-tab { margin-left: 18px; }
+  .groster .view-tab:hover { color: var(--text); }
+  .groster .view-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+  .groster .roster-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .groster .roster-filters select { min-width: 150px; }
+  .groster .roster-filters select:disabled { opacity: 0.45; cursor: not-allowed; }
+  .groster .roster-filters button { padding: 8px 14px; font-size: 13px; }
+
+  .groster .spec-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .groster .role-badge {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .groster .role-badge.role-Damage { background: rgba(217, 83, 79, 0.18); color: #e77c78; }
+  .groster .role-badge.role-Healing { background: rgba(79, 209, 197, 0.18); color: var(--teal); }
+  .groster .auto-tag {
+    font-size: 9px;
+    color: var(--gold);
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+    padding: 0 4px;
+    margin-left: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .groster button {
+    background: var(--gold);
+    border: none;
+    color: #1a1408;
+    font-weight: 600;
+    padding: 9px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    transition: filter 0.15s ease;
+  }
+  .groster button:hover { filter: brightness(1.08); }
+  .groster button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .groster button.secondary:hover { border-color: var(--teal); color: var(--teal); filter: none; }
+  .groster button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .groster #bulk-add-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  padding: 0 16px;
+}
+.groster #bulk-add-wrap summary {
+  cursor: pointer;
+  padding: 14px 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: 'IBM Plex Mono', monospace;
+  user-select: none;
+}
+.groster #bulk-add-wrap summary:hover { color: var(--gold); }
+.groster .bulk-add { padding-bottom: 16px; }
+.groster .bulk-help {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+.groster .bulk-help code {
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--gold);
+}
+.groster #bulkInput {
+  width: 100%;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  resize: vertical;
+}
+.groster #bulkInput:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
+.groster .bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+.groster .bulk-result {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.groster .roster-list {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .groster .row-head {
+    display: grid;
+    grid-template-columns: 48px 1fr 90px 2.2fr 110px 40px;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--panel-alt);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+  }
+  .groster .row-head > div:nth-child(2) { padding-left: 10%; padding-right: 20%; }
+
+  .groster .member-row {
+    display: grid;
+    grid-template-columns: 48px 1fr 90px 2.2fr 110px 40px;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .groster .member-row:hover { background: var(--panel-alt); }
+
+  .groster .rank-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .groster .rank-badge.top1 { color: var(--gold); font-size: 18px; }
+  .groster .rank-badge.top2 { color: #cfd3da; }
+  .groster .rank-badge.top3 { color: #c98a4b; }
+
+  .groster .member-name-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-left: 10%; padding-right: 20%; }
+  .groster .member-name { font-weight: 600; font-size: 15px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .groster .member-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .groster .spec-icon { border-radius: 3px; border: 1px solid var(--border); flex-shrink: 0; vertical-align: middle; }
+  .groster .member-name:hover { text-decoration: underline; }
+  .groster .member-sub { font-size: 11px; color: var(--text-dim); font-family: 'IBM Plex Mono', monospace; }
+
+  .groster .power-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .groster .power-bar-track {
+    flex: 1;
+    height: 10px;
+    background: var(--panel-alt);
+    border-radius: 5px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .groster .power-bar-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 5px;
+    transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .groster .power-bar-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    width: 56px;
+    text-align: right;
+  }
+
+  .groster .server-rank {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--teal);
+    text-align: center;
+  }
+
+  .groster .remove-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+  }
+  .groster .remove-btn:hover { color: var(--danger); }
+
+  .groster .status-loading, .groster .status-error {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+  .groster .status-loading { color: var(--text-dim); }
+  .groster .status-error { color: var(--danger); }
+
+  .groster .detail-panel {
+    background: var(--panel-alt);
+    border-top: 1px solid var(--border);
+    padding: 14px 16px 18px 74px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .groster .boss-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px dashed var(--border);
+    color: var(--text-dim);
+  }
+  .groster .boss-line a { color: var(--teal); text-decoration: none; }
+  .groster .boss-line a:hover { text-decoration: underline; }
+
+  .groster .empty-state {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  /* --- Ranking por boss --- */
+  /* Corrido hacia la izquierda (poco margen a ese lado) y estirado a la
+     derecha (casi sin margen ahí) — relativo al ancho disponible, así que
+     escala solo con la pantalla sin necesitar un breakpoint aparte. */
+  #bossSection {
+    width: auto;
+    max-width: 100%;
+    margin-left: 2%;
+    margin-right: 0;
+  }
+
+  .groster .boss-view-controls {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: flex-end;
+    margin-bottom: 20px;
+  }
+  .groster .boss-scope-field select { min-width: 260px; }
+  .groster #bossRaidFilterSelect { min-width: 170px; }
+  .groster #bossPhaseFilterSelect { min-width: 130px; }
+  .groster #bossClassFilterSelect, .groster #bossSpecFilterSelect { min-width: 150px; }
+  .groster #bossSpecFilterSelect:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .groster .boss-block {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    max-width: 960px;
+    overflow: hidden;
+  }
+  .groster .boss-block-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  .groster .boss-block-header h3 {
+    font-size: 15px;
+    color: var(--text);
+  }
+  .groster .boss-block-count {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .groster .boss-leaderboard-row {
+    display: grid;
+    grid-template-columns: 44px 46px 150px 1fr 66px 72px 44px 76px 58px 80px;
+    gap: 0;
+    align-items: center;
+    padding: 8px 14px;
+    border-top: 1px dashed var(--border);
+    font-size: 13px;
+  }
+  .groster .boss-leaderboard-row:first-child { border-top: none; }
+  .groster .boss-leaderboard-row-healer { opacity: 0.65; }
+  .groster .boss-leaderboard-row > div {
+    border-right-width: 1px;
+    border-right-style: solid;
+    border-right-color: var(--border);
+    padding: 0 8px;
+    min-width: 0;
+  }
+  .groster .boss-leaderboard-row > div:first-child { padding-left: 0; }
+  .groster .boss-leaderboard-row > div:last-child { border-right-style: none; padding-right: 0; }
+  .groster .boss-leaderboard-head {
+    border-top: none;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  .groster .boss-leaderboard-head .align-right { text-align: right; }
+  .groster .boss-leaderboard-row .rank-badge { font-size: 13px; }
+  .groster .boss-player-name {
+    font-weight: 600;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .groster .boss-player-name:hover { text-decoration: underline; }
+  .groster .boss-class-icon {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: default;
+  }
+  .groster .class-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 3px 5px;
+    border: 1px solid;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    white-space: nowrap;
+  }
+  .groster .role-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .groster .role-dot-Damage { background: #e77c78; }
+  .groster .role-dot-Healing { background: var(--teal); }
+  .groster .damage-bar-track {
+    height: 14px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    /* a propósito sin border-radius: cuadrada, no como el power-bar del roster */
+  }
+  .groster .damage-bar-fill {
+    height: 100%;
+    width: 0%;
+    transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .groster .metric-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: right;
+    color: var(--text);
+  }
+  .groster .metric-value.damage { color: #f2c14e; font-weight: 700; }
+  .groster .metric-value-secondary {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 400;
+    text-align: right;
+    color: var(--text-dim);
+  }
+  .groster .boss-duration {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: right;
+  }
+  .groster .externals-count {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: right;
+    color: var(--text-dim);
+    cursor: default;
+  }
+  .groster .externals-count:not(:empty):hover { color: var(--gold); }
+
+  .groster .dk-analysis-cell-wrap { display: flex; justify-content: center; }
+  .groster .dk-analysis-cell { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text-dim); text-align: center; }
+  .groster .dk-analysis-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 3px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .groster .dk-analysis-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .groster .dk-analysis-panel {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .groster .compare-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+    position: relative;
+  }
+  .groster .compare-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px;
+    width: 100%;
+  }
+  .groster .compare-pick-btn {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .groster .compare-pick-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .groster .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .groster .compare-col {
+    min-width: 0; /* si no, el grid no deja encoger las tablas anchas del Timeline y se desborda */
+    overflow: hidden;
+  }
+  @media (max-width: 900px) {
+    .groster .compare-grid { grid-template-columns: 1fr; }
+  }
+  .groster .dk-analysis-warning {
+    color: var(--gold);
+    font-size: 11px;
+    margin-bottom: 8px;
+  }
+  .groster .dk-analysis-summary { color: var(--text); margin-bottom: 8px; }
+  .groster .dk-analysis-spells { font-family: 'IBM Plex Mono', monospace; font-size: 11px; max-width: 420px; }
+  .groster .dk-analysis-spell-row { display: flex; justify-content: space-between; padding: 2px 0; }
+
+  .groster .dk-analysis-header {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    max-width: 320px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+  .groster .dk-analysis-header-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--text-dim); }
+  .groster .dk-header-boss { color: var(--teal); }
+
+  .groster .dk-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+  }
+  .groster .dk-row-label { flex: 1; }
+  .groster .dk-row-icon { flex-shrink: 0; width: 14px; text-align: center; }
+  .groster .dk-row-value { font-weight: 600; }
+  .groster .dk-row-good .dk-row-icon, .groster .dk-row-good .dk-row-value { color: #3fb950; }
+  .groster .dk-row-warn .dk-row-icon, .groster .dk-row-warn .dk-row-value { color: #e3b341; }
+  .groster .dk-row-info .dk-row-icon, .groster .dk-row-info .dk-row-value { color: var(--teal); }
+  .groster .dk-row-label { color: var(--text-dim); }
+
+  .groster .dk-analysis-note { margin-top: 8px; font-size: 11px; font-style: italic; }
+  .groster .dk-analysis-section-title {
+    color: var(--gold);
+    font-weight: 700;
+    font-size: 12px;
+    margin: 12px 0 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .groster .dk-analysis-section-title:first-of-type { margin-top: 4px; }
+  .groster .dk-analysis-raw-toggle { margin-top: 8px; }
+  .groster .dk-analysis-raw-toggle summary { cursor: pointer; font-size: 11px; color: var(--teal); }
+  .groster .dk-analysis-raw-toggle .dk-analysis-spells { margin-top: 6px; }
+  .groster .dk-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+  }
+  .groster .dk-tab {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 6px 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  .groster .dk-tab:hover { color: var(--text); }
+  .groster .dk-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+  .groster .dk-analysis-timeline-table-wrap {
+    margin-top: 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+  .groster .dk-analysis-timeline-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+  /* Time / Ability / Target fijos y angostos; Buffs se queda con lo que
+     sobra (importante: si esta columna queda muy angosta, los íconos de
+     buffs wrapean en muchas líneas y la fila se deforma en alto — por eso
+     los primeros 3 anchos se mantienen chicos a propósito). Esta tabla es
+     EXCLUSIVA de Death Knight — otras clases usan .lock-timeline-grid más
+     abajo, con su propio CSS, para no volver a pisarse nunca. */
+  .groster .dk-analysis-timeline-table th:nth-child(1),
+  .groster .dk-analysis-timeline-table td:nth-child(1) { width: 130px; }
+  .groster .dk-analysis-timeline-table th:nth-child(2),
+  .groster .dk-analysis-timeline-table td:nth-child(2) { width: 240px; }
+  .groster .dk-analysis-timeline-table.has-dk-cols th:nth-child(3),
+  .groster .dk-analysis-timeline-table.has-dk-cols td:nth-child(3) { width: 140px; }
+  .groster .dk-analysis-timeline-table thead th {
+    background: var(--panel-dark, var(--panel));
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .groster .dk-analysis-timeline-table thead th:last-child { border-right: none; }
+  .groster .dk-analysis-timeline-table tbody tr {
+    border-bottom: 1px solid var(--border);
+  }
+  .groster .dk-analysis-timeline-table tbody tr:last-child { border-bottom: none; }
+  .groster .dk-analysis-timeline-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+  .groster .dk-analysis-timeline-table td {
+    padding: 6px 12px;
+    vertical-align: top;
+    border-right: 1px solid var(--border);
+  }
+  .groster .dk-analysis-timeline-table td:last-child { border-right: none; }
+  .groster .dk-timeline-time { color: var(--text-dim); white-space: nowrap; font-size: 14px; font-weight: 500; }
+  .groster .dk-timeline-gap { color: #3fb950; font-size: 12px; }
+  .groster .dk-timeline-spell { color: var(--text); white-space: normal; display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  .groster .dk-timeline-dim { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 14px; }
+  .groster .dk-timeline-buffs { color: var(--text-dim); font-size: 10px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; overflow: hidden; min-width: 0; }
+  .groster .dk-icon { border-radius: 3px; border: 1px solid var(--border); vertical-align: middle; flex-shrink: 0; }
+  .groster .dk-analysis-error { color: var(--danger); }
+  .groster .boss-log-cell {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .groster .boss-log-cell a { color: var(--text-dim); text-decoration: none; font-size: 13px; flex-shrink: 0; }
+  .groster .boss-log-cell a:hover { color: var(--teal); }
+  .groster .boss-empty {
+    padding: 14px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  @media (max-width: 640px) {
+    .groster .boss-leaderboard-row { grid-template-columns: 26px 28px 70px 1fr 44px 24px; }
+    .groster .boss-duration,
+    .groster .metric-value-secondary,
+    .groster .externals-count,
+    .groster .dk-analysis-cell-wrap { display: none; }
+    .groster .boss-log-cell .log-date-text { display: none; }
+    .groster .class-badge { padding: 2px 4px; }
+  }
+
+
+  .groster .footnote {
+    margin-top: 14px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* --- Perfil de jugador --- */
+  #playerSection { max-width: 760px; margin: 0 auto; }
+  #backFromProfileBtn { margin-bottom: 16px; }
+
+  /* --- Análisis de log --- */
+  #analysisSection { max-width: 1100px; margin: 0 auto; }
+  #analysisSection.is-comparing { max-width: 1600px; }
+  #backFromAnalysisBtn { margin-bottom: 16px; }
+
+  .groster .profile-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .groster .profile-phase-field { margin-left: auto; }
+  .groster .profile-phase-field select { min-width: 130px; }
+  .groster .profile-class-icon .class-badge { font-size: 13px; padding: 6px 9px; }
+  .groster .profile-header h2 { font-size: 22px; margin-bottom: 2px; }
+  .groster .profile-sub {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .groster .profile-core-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .groster .profile-core-input {
+    width: 110px;
+    padding: 3px 7px;
+    font-size: 12px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .groster .profile-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 20px;
+  }
+  .groster .profile-stat { text-align: center; }
+  .groster .profile-stat .val { font-size: 20px; font-weight: 600; color: var(--gold); display: block; }
+  .groster .profile-stat .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+
+  .groster .profile-history {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 20px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .groster .profile-history-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .groster .profile-history-delta {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+  }
+  .groster .profile-history-svg { width: 100%; height: auto; display: block; }
+  .groster .profile-history-empty { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+
+  .groster .profile-boss-list { font-size: 13px; }
+  .groster .profile-boss-row {
+    display: grid;
+    grid-template-columns: 1fr 80px 90px 70px 30px;
+    gap: 8px;
+    align-items: center;
+    padding: 7px 14px;
+    border-top: 1px dashed var(--border);
+  }
+  .groster .profile-boss-row:first-child { border-top: none; }
+  .groster .profile-boss-row-head {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  .groster .profile-boss-row div:nth-child(2),
+  .groster .profile-boss-row div:nth-child(3),
+  .groster .profile-boss-row div:nth-child(4) {
+    font-family: 'IBM Plex Mono', monospace;
+    text-align: right;
+  }
+  .groster .profile-boss-row-empty { color: var(--text-dim); opacity: 0.55; }
+  .groster .profile-boss-row a { color: var(--text-dim); text-decoration: none; }
+  .groster .profile-boss-row a:hover { color: var(--teal); }
+
+  @media (max-width: 640px) {
+    .groster .profile-stats { grid-template-columns: repeat(2, 1fr); }
+    .groster .profile-boss-row { grid-template-columns: 1fr 60px 24px; }
+    .groster .profile-boss-row div:nth-child(3),
+    .groster .profile-boss-row div:nth-child(4) { display: none; }
+  }
+
+  @media (max-width: 640px) {
+    .groster .row-head, .groster .member-row {
+      grid-template-columns: 32px 1fr 70px 90px 30px;
+    }
+    .groster .server-rank { display: none; }
+    .groster .power-bar-value { display: none; }
+    .groster .member-name-cell { padding-left: 0; padding-right: 6%; }
+    .groster .row-head > div:nth-child(2) { padding-left: 0; padding-right: 6%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .groster .power-bar-fill { transition: none; }
+  }
+/* --- Refresh all: progress modal --- */
+.refresh-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 12, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.refresh-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px 28px;
+  width: 320px;
+  max-width: 90vw;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.refresh-modal-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  text-align: center;
+}
+.refresh-progress-bar-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 6px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.refresh-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold));
+  transition: width 0.2s ease;
+}
+.refresh-progress-text {
+  margin-top: 10px;
+  text-align: center;
+  color: var(--text);
+  font-size: 13px;
+}
+.refresh-progress-sub {
+  margin-top: 4px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* --- Timeline de Warlock (y otras clases no-DK): CSS Grid propio,
+   deliberadamente separado del <table> de DK de más arriba. --- */
+.groster .lock-timeline-wrap {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.groster .lock-timeline-grid {
+  display: grid;
+  /* Time/Ability/Target angostos a propósito — si Buffs (la última columna)
+     queda muy angosta, sus íconos wrapean en muchas líneas y la fila se
+     deforma en alto (mismo problema que tenía la tabla de DK). minmax()
+     le asegura un piso de espacio antes de necesitar scroll horizontal. */
+  grid-template-columns: 130px 240px 140px minmax(160px, 1fr);
+  font-family: 'IBM Plex Mono', monospace;
+  min-width: 670px;
+}
+.groster .lock-timeline-head {
+  background: var(--panel-dark, var(--panel));
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.groster .lock-timeline-head:nth-child(4) { border-right: none; }
+.groster .lock-timeline-cell {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+}
+.groster .lock-timeline-cell:nth-child(4n) { border-right: none; }
+/* Cebra: cada fila son 4 celdas seguidas (+ 4 headers antes); a partir de la
+   2da fila de datos alternamos fondo. */
+.groster .lock-timeline-cell:nth-child(8n+9),
+.groster .lock-timeline-cell:nth-child(8n+10),
+.groster .lock-timeline-cell:nth-child(8n+11),
+.groster .lock-timeline-cell:nth-child(8n+12) { background: rgba(255, 255, 255, 0.02); }
+.groster .lock-timeline-time { color: var(--text-dim); white-space: nowrap; font-weight: 500; }
+.groster .lock-timeline-gap { color: #3fb950; font-size: 12px; }
+.groster .lock-timeline-spell { color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.groster .lock-timeline-target { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.groster .lock-timeline-buffs { color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }

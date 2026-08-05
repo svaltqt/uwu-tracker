@@ -1,0 +1,19 @@
+[project]
+name = "uwu-tracker"
+version = "0.1.0"
+description = "Tracker de roster y rankings de guild para uwu-logs.xyz"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "matplotlib>=3.8",
+]
+
+[project.scripts]
+uwu-tracker = "uwu_tracker.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

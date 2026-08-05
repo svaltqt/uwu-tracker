@@ -1,0 +1,2652 @@
+(function () {
+  // Mapeo class_i -> clase. Solo class_i=0 (Death Knight) está confirmado en vivo;
+  // el resto se infiere asumiendo orden alfabético de las 10 clases de WotLK.
+  const CLASS_MAP = {
+    0: { name: 'Death Knight', color: '#C41F3B' },
+    1: { name: 'Druid', color: '#FF7D0A' },
+    2: { name: 'Hunter', color: '#ABD473' },
+    3: { name: 'Mage', color: '#69CCF0' },
+    4: { name: 'Paladin', color: '#F58CBA' },
+    5: { name: 'Priest', color: '#FFFFFF' },
+    6: { name: 'Rogue', color: '#FFF569' },
+    7: { name: 'Shaman', color: '#0070DE' },
+    8: { name: 'Warlock', color: '#9482C9' },
+    9: { name: 'Warrior', color: '#C79C6E' },
+  };
+
+  // Mapeo class_i + spec -> {name, role}. Igual que CLASS_MAP, solo class_i=0
+  // está confirmado en vivo; el resto asume el orden estándar de árboles de
+  // talentos de WotLK (1/2/3 tal como los muestra el cliente de WoW). Todas
+  // las specs de sanación pura se marcan "Healing"; el resto (incluidos
+  // tanks) queda como "Damage", porque así es como las cuenta un meter de dps.
+  const SPEC_MAP = {
+    0: { 1: { name: 'Blood', role: 'Damage' }, 2: { name: 'Frost', role: 'Damage' }, 3: { name: 'Unholy', role: 'Damage' } },
+    1: { 1: { name: 'Balance', role: 'Damage' }, 2: { name: 'Feral', role: 'Damage' }, 3: { name: 'Restoration', role: 'Healing' } },
+    2: { 1: { name: 'Beast Mastery', role: 'Damage' }, 2: { name: 'Marksmanship', role: 'Damage' }, 3: { name: 'Survival', role: 'Damage' } },
+    3: { 1: { name: 'Arcane', role: 'Damage' }, 2: { name: 'Fire', role: 'Damage' }, 3: { name: 'Frost', role: 'Damage' } },
+    4: { 1: { name: 'Holy', role: 'Healing' }, 2: { name: 'Protection', role: 'Damage' }, 3: { name: 'Retribution', role: 'Damage' } },
+    5: { 1: { name: 'Discipline', role: 'Healing' }, 2: { name: 'Holy', role: 'Healing' }, 3: { name: 'Shadow', role: 'Damage' } },
+    6: { 1: { name: 'Assassination', role: 'Damage' }, 2: { name: 'Combat', role: 'Damage' }, 3: { name: 'Subtlety', role: 'Damage' } },
+    7: { 1: { name: 'Elemental', role: 'Damage' }, 2: { name: 'Enhancement', role: 'Damage' }, 3: { name: 'Restoration', role: 'Healing' } },
+    8: { 1: { name: 'Affliction', role: 'Damage' }, 2: { name: 'Demonology', role: 'Damage' }, 3: { name: 'Destruction', role: 'Damage' } },
+    9: { 1: { name: 'Arms', role: 'Damage' }, 2: { name: 'Fury', role: 'Damage' }, 3: { name: 'Protection', role: 'Damage' } },
+  };
+
+  // Ícono de Wowhead del árbol de talentos por class_i + spec (mismo criterio
+  // que los íconos de hechizos del analizador: se linkean desde el CDN
+  // público de Wowhead, no se reproducen/hostean acá).
+  const SPEC_ICON = {
+    0: { 1: 'spell_deathknight_bloodpresence', 2: 'spell_deathknight_frostpresence', 3: 'spell_deathknight_unholypresence' },
+    1: { 1: 'spell_nature_starfall', 2: 'ability_druid_catform', 3: 'spell_nature_healingtouch' },
+    2: { 1: 'ability_hunter_bestialdiscipline', 2: 'ability_marksmanship', 3: 'ability_hunter_camouflage' },
+    3: { 1: 'spell_holy_magicalsentry', 2: 'spell_fire_firebolt02', 3: 'spell_frost_frostbolt02' },
+    4: { 1: 'spell_holy_holybolt', 2: 'spell_holy_devotionaura', 3: 'spell_holy_auraoflight' },
+    5: { 1: 'spell_holy_wordfortitude', 2: 'spell_holy_guardianspirit', 3: 'spell_shadow_shadowwordpain' },
+    6: { 1: 'ability_rogue_eviscerate', 2: 'ability_backstab', 3: 'ability_stealth' },
+    7: { 1: 'spell_nature_lightning', 2: 'spell_nature_lightningshield', 3: 'spell_nature_magicimmunity' },
+    8: { 1: 'spell_shadow_deathcoil', 2: 'spell_shadow_metamorphosis', 3: 'spell_shadow_rainoffire' },
+    9: { 1: 'ability_warrior_savageblow', 2: 'ability_warrior_innerrage', 3: 'ability_warrior_defensivestance' },
+  };
+  function specIconHtml(classI, specNum, size) {
+    const icon = SPEC_ICON[classI] && SPEC_ICON[classI][specNum];
+    if (!icon) return '';
+    const label = (SPEC_MAP[classI] && SPEC_MAP[classI][specNum] && SPEC_MAP[classI][specNum].name) || '';
+    return `<img class="spec-icon" src="https://wow.zamimg.com/images/wow/icons/medium/${icon}.jpg" alt="${label}" title="${label}" width="${size}" height="${size}">`;
+  }
+
+  // La API devuelve bosses de VARIAS raids mezclados en el mismo objeto
+  // `bosses` de un personaje (confirmado: "Northrend Beasts" -de Trial of the
+  // Crusader- y "Koralon the Flame Watcher" -de Vault of Archavon- aparecen
+  // juntos en la misma respuesta). Como el campo raid_id que devuelve la
+  // API no está documentado/confirmado en su formato real, agrupamos por
+  // nombre de boss contra esta tabla estática de los raids de WotLK. Un boss
+  // que no esté acá cae en "Other" instead of disappearing.
+  // Lista de raids/jefes de WotLK. `name` es el nombre CANÓNICO —el que
+  // confirmó el usuario que devuelve realmente el server, en inglés— y es lo
+  // que se muestra en los selects incluso sin ningún log cargado todavía.
+  // `aliases` son variantes (nombres en español, u otras) que también hacen
+  // match si el server llegara a devolver eso en cambio.
+  const RAID_BOSS_LIST = [
+    { raid: 'Naxxramas', bosses: [
+      { name: 'Patchwerk', aliases: ['Remendejo'] },
+      { name: 'Grobbulus' },
+      { name: 'Gluth' },
+      { name: 'Thaddius' },
+      { name: "Anub'Rekhan" },
+      { name: 'Grand Widow Faerlina', aliases: ['Gran Viuda Faerlina'] },
+      { name: 'Maexxna' },
+      { name: 'Instructor Razuvious' },
+      { name: 'Gothik the Harvester', aliases: ['Gothik el Cosechador'] },
+      { name: 'The Four Horsemen', aliases: ['Los Cuatro Jinetes'] },
+      { name: 'Noth the Plaguebringer', aliases: ['Noth el Pesteador'] },
+      { name: 'Heigan the Unclean', aliases: ['Heigan el Impuro'] },
+      { name: 'Loatheb' },
+      { name: 'Sapphiron' },
+      { name: "Kel'Thuzad" },
+    ] },
+    { raid: 'The Eye of Eternity', aliases: ['El Ojo de la Eternidad'], bosses: [{ name: 'Malygos' }] },
+    { raid: 'The Obsidian Sanctuary', aliases: ['Sagrario Obsidiana'], bosses: [{ name: 'Sartharion' }] },
+    { raid: 'Ulduar', bosses: [
+      { name: 'Flame Leviathan', aliases: ['Leviatán de Llamas'] },
+      { name: 'Ignis the Furnace Master', aliases: ['Ignis, el Maestro de la Caldera'] },
+      { name: 'Razorscale', aliases: ['Tachoscuro'] },
+      { name: 'XT-002 Deconstructor', aliases: ['Desarmador XA-002', 'Desarmador XT-002'] },
+      { name: 'The Iron Assembly', aliases: ['Asamblea de Hierro', 'Steelbreaker', 'Rompecielos', 'Runemaster Molgeim', 'Molgeim', 'Stormcaller Brundir', 'Brundir'] },
+      { name: 'Kologarn' },
+      { name: 'Auriaya' },
+      { name: 'Freya' },
+      { name: 'Hodir' },
+      { name: 'Mimiron' },
+      { name: 'Thorim' },
+      { name: 'General Vezax' },
+      { name: 'Yogg-Saron' },
+      { name: 'Algalon the Observer', aliases: ['Algalon el Observador'] },
+    ] },
+    { raid: 'Trial of the Crusader', aliases: ['Prueba del Cruzado'], bosses: [
+      { name: 'Northrend Beasts', aliases: ['The Beasts of Northrend', 'Las Bestias de Nortrend', 'Gormok', 'Acidmaw and Dreadscale', 'Ácido y Pavor', 'Icehowl', 'Aullaneve'] },
+      { name: 'Lord Jaraxxus' },
+      { name: 'Faction Champions', aliases: ['Campeones de la Facción'] },
+      { name: "Twin Val'kyr", aliases: ["Val'kyr Gemelas", 'Fjola Lightbane', 'Fjola', 'Eydis Darkbane', 'Eydis'] },
+      { name: "Anub'arak" },
+    ] },
+    { raid: "Onyxia's Lair", aliases: ['Guarida de Onyxia'], bosses: [{ name: 'Onyxia' }] },
+    { raid: 'Icecrown Citadel', aliases: ['Ciudadela de la Corona de Hielo'], bosses: [
+      { name: 'Lord Marrowgar', aliases: ['Lord Tuétano'] },
+      { name: 'Lady Deathwhisper', aliases: ['Lady Susurramuerte'] },
+      { name: 'Icecrown Gunship Battle', aliases: ['Batalla de los Cañoneros'] },
+      { name: 'Deathbringer Saurfang', aliases: ['Libramorte Saurfang'] },
+      { name: 'Rotface', aliases: ['Panzachancro'] },
+      { name: 'Festergut', aliases: ['Carapútrea'] },
+      { name: 'Professor Putricide', aliases: ['Profesor Putricida'] },
+      { name: 'Blood Prince Council', aliases: ['Consejo de los Príncipes de la Sangre'] },
+      { name: "Blood-Queen Lana'thel", aliases: ['Reina de la Sangre Lana\'thel'] },
+      { name: 'Valithria Dreamwalker', aliases: ['Valithria Caminasueños'] },
+      { name: 'Sindragosa' },
+      { name: 'The Lich King', aliases: ['El Rey Exánime'] },
+    ] },
+    { raid: 'The Ruby Sanctuary', aliases: ['Sagrario Rubí'], bosses: [{ name: 'Halion' }] },
+    { raid: 'Vault of Archavon', aliases: ['La Cámara de Archavon'], bosses: [
+      { name: 'Archavon the Stone Watcher', aliases: ['Archavon el Vigía de Piedra'] },
+      { name: 'Emalon the Storm Watcher', aliases: ['Emalon el Vigía de la Tormenta'] },
+      { name: 'Koralon the Flame Watcher', aliases: ['Koralon el Vigía de la Llama'] },
+      { name: 'Toravon the Ice Watcher', aliases: ['Toravon el Vigía del Hielo'] },
+    ] },
+  ];
+
+  const BOSS_RAID_MAP = {};
+  // Mapa inverso: cualquier nombre (alias o sub-boss) → nombre canónico.
+  // Sirve para normalizar los keys que devuelve la API (ej. "Northrend Beasts")
+  // al nombre canónico que usa la UI ("The Beasts of Northrend").
+  const ALIAS_TO_CANONICAL = {};
+  RAID_BOSS_LIST.forEach(({ raid, bosses }) => {
+    bosses.forEach(({ name, aliases }) => {
+      BOSS_RAID_MAP[name] = raid;
+      ALIAS_TO_CANONICAL[name] = name; // el canónico se mapea a sí mismo
+      (aliases || []).forEach((alias) => {
+        BOSS_RAID_MAP[alias] = raid;
+        ALIAS_TO_CANONICAL[alias] = name;
+      });
+    });
+  });
+
+  // Busca la data de un boss en el objeto `bosses` de la respuesta de la API,
+  // probando primero el nombre canónico y luego todos sus aliases conocidos.
+  // La API puede devolver el boss bajo cualquier variante (ej. "Northrend Beasts"
+  // en vez de "The Beasts of Northrend"), así que hay que probar todas.
+  function findBossData(bosses, canonicalName) {
+    if (!bosses) return null;
+    // Intento directo con el nombre canónico
+    if (bosses[canonicalName] && Object.keys(bosses[canonicalName]).length) return bosses[canonicalName];
+    // Buscar bajo cualquier alias conocido de este boss
+    const entry = RAID_BOSS_LIST.flatMap((r) => r.bosses).find((b) => b.name === canonicalName);
+    if (entry && entry.aliases) {
+      for (const alias of entry.aliases) {
+        if (bosses[alias] && Object.keys(bosses[alias]).length) return bosses[alias];
+      }
+    }
+    return null;
+  }
+
+  // Orden de progresión para el selector de Raid (no alfabético) — el mismo
+  // orden en que las pasó el usuario.
+  const RAID_ORDER = [...RAID_BOSS_LIST.map((r) => r.raid), 'Other'];
+
+  function getRaidForBoss(bossName) {
+    return BOSS_RAID_MAP[bossName] || 'Other';
+  }
+
+  // Nombres canónicos de los jefes de una raid conocida, tal como hay que
+  // mostrarlos aunque todavía no exista ningún log cargado para ella.
+  function getCanonicalBossNames(raid) {
+    const entry = RAID_BOSS_LIST.find((r) => r.raid === raid);
+    return entry ? entry.bosses.map((b) => b.name) : [];
+  }
+
+  function getAllCanonicalBossNames() {
+    return RAID_BOSS_LIST.flatMap((r) => r.bosses.map((b) => b.name));
+  }
+
+  // Fases de contenido de WotLK (4.5 en total). Vault of Archavon es
+  // "evergreen" y va sumando un jefe nuevo por fase en vez de abrir de una,
+  // así que ahí filtramos boss por boss en vez de por raid entera.
+  const PHASE_ORDER = ['Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 4.5'];
+
+  const PHASE_BOSSES = {
+    'Phase 1': [
+      ...getCanonicalBossNames('Naxxramas'),
+      'Onyxia', 'Malygos', 'Sartharion',
+      'Archavon the Stone Watcher',
+    ],
+    'Phase 2': [
+      ...getCanonicalBossNames('Ulduar'),
+      'Emalon the Storm Watcher',
+    ],
+    'Phase 3': [
+      ...getCanonicalBossNames('Trial of the Crusader'),
+      'Koralon the Flame Watcher',
+    ],
+    'Phase 4': [
+      ...getCanonicalBossNames('Icecrown Citadel'),
+      'Toravon the Ice Watcher',
+    ],
+    'Phase 4.5': [
+      'Halion',
+    ],
+  };
+
+  // Raids que tienen al menos un jefe en esa fase (para hacer coincidir el
+  // filtro de Fase con el de Raid, como pidió el usuario).
+  function getRaidsForPhase(phase) {
+    const bosses = PHASE_BOSSES[phase] || [];
+    const raids = new Set(bosses.map(getRaidForBoss).filter((r) => r !== 'Other'));
+    return RAID_ORDER.filter((r) => raids.has(r));
+  }
+
+  function getSpecInfo(classI, spec) {
+    const bySpec = SPEC_MAP[classI];
+    const info = bySpec && bySpec[Number(spec)];
+    return info || { name: spec ? `Spec ${spec}` : '?', role: 'Damage' };
+  }
+
+  const CONFIG_KEY = 'groster-config';
+  const DATA_KEY = 'groster-data';
+  const ALL_CORES = '__ALL__';
+  const DEFAULT_CORE = 'Core 1';
+  const ALL_ROLES = '__ALL__';
+  const AUTO_SPEC = 'auto';
+  const ROLE_LABELS = { [ALL_ROLES]: 'All roles', Damage: 'Damage', Healing: 'Healing' };
+
+  let config = { guildName: 'Mi Guild', server: '', members: [] };
+  let dataCache = {}; // key: `${server}::${name}::${spec}` -> { status, data, detectedSpec, error, fetchedAt }
+  let activeCoreFilter = ALL_CORES;
+  let activeRoleFilter = ALL_ROLES;
+  let activeClassFilter = ''; // '' = todas, si no class_i como string ('0'..'9')
+  let activeSpecFilter = ''; // '' = todas, si no '1'/'2'/'3' (dentro de la clase elegida)
+  let viewMode = 'roster'; // 'roster' | 'boss'
+  let profilePlayerName = null; // nombre del jugador cuyo perfil se está viendo, o null
+  let profileReturnView = 'roster'; // a qué vista volver con "← Volver"
+  let profilePhaseFilter = 'Phase 3'; // fase actual del server, por defecto en el perfil
+  let analysisReturnView = 'boss'; // a qué vista volver desde el análisis de log
+  let activeAnalysisData = null; // datos del log siendo analizado
+  let compareWithPlayerName = null; // nombre del segundo jugador en la comparación de Timelines, o null
+  let bossScope = '__ALL__'; // '__ALL__' = raid completa, o el nombre exacto de un jefe
+  let bossRaidFilter = ''; // '' = todas las raids, o el nombre exacto de una (ej. 'Ulduar')
+  let bossPhaseFilter = ''; // '' = todas las fases, o 'Phase 1'..'Phase 4.5'
+  const TOP_N_PER_BOSS = 10;
+
+  const $ = (id) => document.getElementById(id);
+
+  function memberKey(server, name, spec) {
+    return `${server}::${name}::${spec}`;
+  }
+
+  // Ventana corta contra clicks duplicados accidentales — NO es un caché
+  // semanal. Un caché por semana asume que el raid es siempre el mismo día
+  // (justo después del reset), lo cual es falso: si el grupo raidea otro
+  // día de la semana, un fetch temprano (ej. martes) taparía el log nuevo
+  // del sábado hasta el próximo reset. Mejor prevenir dobles clicks nomás.
+  // Inicio del ciclo semanal actual: el martes 22:00 (hora local) más
+  // reciente que ya pasó. Si ya se pidió /character de un personaje DESPUÉS
+  // de ese momento, se saltea (evita repetir el mismo log toda la semana).
+  //
+  // ADVERTENCIA / LIMITACIÓN CONOCIDA: esto asume que cuando refrescás, tu
+  // grupo YA raideó esta semana. Si le das a "Refresh all" ANTES de que ese
+  // grupo raidee (ej. lunes, antes del raid del sábado), va a quedar
+  // marcado como "actualizado" con datos viejos, y el log nuevo del sábado
+  // NO va a aparecer hasta el martes siguiente. Para grupos que raidean
+  // distintos días, conviene refrescar recién DESPUÉS de que cada uno
+  // termine su noche de raid, no antes.
+  function startOfCurrentWeeklyCycle() {
+    const now = new Date();
+    const TUESDAY = 2;
+    const daysSinceTuesday = (now.getDay() + 7 - TUESDAY) % 7;
+    const boundary = new Date(now);
+    boundary.setDate(now.getDate() - daysSinceTuesday);
+    boundary.setHours(22, 0, 0, 0);
+    if (boundary.getTime() > now.getTime()) boundary.setDate(boundary.getDate() - 7);
+    return boundary;
+  }
+
+  function getCores() {
+    const cores = new Set(config.members.map((m) => m.core || DEFAULT_CORE));
+    return Array.from(cores).sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+  }
+
+  // La API devuelve el puntaje en escala 0-10000 (percentil × 100, ej. 9459 = 94.59).
+  function formatScore(rawPoints) {
+    if (rawPoints == null) return '–';
+    return (rawPoints / 100).toFixed(2);
+  }
+
+  function scoreColor(rawPoints) {
+    if (rawPoints == null) return 'var(--text-dim)';
+    const pct = rawPoints / 100;
+    if (pct >= 100) return '#F4C35A';   // amarillo claro / dorado (confirmado)
+    if (pct >= 95) return '#F39A2D';    // naranja intenso (confirmado)
+    if (pct >= 90) return '#F05A28';    // naranja rojizo (confirmado)
+    if (pct >= 75) return '#a335ee';    // morado
+    if (pct >= 50) return '#0070de';    // azul
+    if (pct >= 25) return '#1eff00';    // verde
+    return '#808080';                    // gris
+  }
+
+  async function loadState() {
+    try {
+      const cfgRaw = localStorage.getItem(CONFIG_KEY);
+      if (cfgRaw) config = JSON.parse(cfgRaw);
+    } catch (e) { /* no config saved yet */ }
+    // Migración: roster guardado antes de que existiera el campo "core".
+    config.members = (config.members || []).map((m) => ({ ...m, core: m.core || DEFAULT_CORE }));
+    try {
+      const dataRaw = localStorage.getItem(DATA_KEY);
+      if (dataRaw) dataCache = JSON.parse(dataRaw);
+    } catch (e) { /* no cache saved yet */ }
+
+    $('guildName').value = config.guildName || 'Mi Guild';
+    $('serverInput').value = config.server || '';
+    render();
+  }
+
+  async function saveConfig() {
+    try {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    } catch (e) { console.error('No se pudo guardar la config', e); }
+  }
+
+  async function saveDataCache() {
+    try {
+      localStorage.setItem(DATA_KEY, JSON.stringify(dataCache));
+    } catch (e) { console.error('No se pudo guardar la cache de datos', e); }
+  }
+
+  async function fetchSpec(server, name, spec) {
+    const resp = await fetch('/api/character', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server, name, spec_i: String(spec) }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  async function fetchMember(server, name, spec) {
+    const key = memberKey(server, name, spec);
+    dataCache[key] = { ...(dataCache[key] || {}), status: 'loading' };
+    render();
+
+    try {
+      if (spec === AUTO_SPEC) {
+        // Detección automática: no hay endpoint que devuelva las 3 specs de
+        // una — probamos 1, 2 y 3 y nos quedamos con la que tenga más
+        // overall_points, asumiendo que esa es la spec "principal" con la
+        // que el jugador realmente juega/loguea.
+        let best = null;
+        let bestSpec = null;
+        let bestPoints = -Infinity;
+        let lastErr = null;
+        for (const s of ['1', '2', '3']) {
+          try {
+            const data = await fetchSpec(server, name, s);
+            const points = data.overall_points || 0;
+            if (points > bestPoints) {
+              bestPoints = points;
+              best = data;
+              bestSpec = s;
+            }
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        if (!best) throw lastErr || new Error('No spec returned data');
+        dataCache[key] = { status: 'done', data: best, detectedSpec: bestSpec, fetchedAt: new Date().toISOString() };
+      } else {
+        const data = await fetchSpec(server, name, spec);
+        dataCache[key] = { status: 'done', data, fetchedAt: new Date().toISOString() };
+      }
+    } catch (err) {
+      dataCache[key] = {
+        status: 'error',
+        error: 'Could not fetch the data. This could be a browser CORS block, the name/server doesn\'t exist, or the character has no logs.',
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+    render();
+    await saveDataCache();
+  }
+
+  function showRefreshProgress(total) {
+    $('refreshProgressOverlay').style.display = 'flex';
+    updateRefreshProgress(0, 0, 0, 0, total);
+  }
+
+  function updateRefreshProgress(loaded, validated, failed, skipped, total) {
+    const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+    $('refreshProgressFill').style.width = `${pct}%`;
+    $('refreshProgressText').textContent = `${loaded} / ${total} (${pct}%)`;
+    $('refreshProgressSub').textContent = `${validated} validated · ${failed} failed · ${skipped} skipped (already have this week's log)`;
+  }
+
+  function hideRefreshProgress() {
+    $('refreshProgressOverlay').style.display = 'none';
+  }
+
+  // ¿Los datos que YA tenemos guardados de este personaje incluyen algún
+  // boss con un log fechado dentro del ciclo semanal actual? Si es así, no
+  // hay nada nuevo que traer hasta el próximo reset — se saltea. Si NO,
+  // sigue "disponible" y se vuelve a intentar en cada refresh (sin
+  // importar cuándo fue el último intento), porque el log de esta semana
+  // todavía puede no haber salido.
+  function hasLogFromCurrentCycle(data, cycleStartMs) {
+    if (!data || !data.bosses) return false;
+    return Object.values(data.bosses).some((b) => {
+      const d = b && parseReportDate(b.report_id);
+      return d && d.getTime() >= cycleStartMs;
+    });
+  }
+
+  async function refreshAll() {
+    const server = $('serverInput').value.trim();
+    if (!server) { alert('Enter the server name first.'); return; }
+    $('refreshBtn').disabled = true;
+    const total = config.members.length;
+    if (!total) { $('refreshBtn').disabled = false; return; }
+    let loaded = 0;
+    let validated = 0;
+    let failed = 0;
+    let skipped = 0;
+    const cycleStart = startOfCurrentWeeklyCycle().getTime();
+    showRefreshProgress(total);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // dejar pintar el modal antes de arrancar
+    for (const m of config.members) {
+      const key = memberKey(server, m.name, m.spec);
+      const cached = dataCache[key];
+      const alreadyFreshThisCycle = cached && cached.status === 'done'
+        && hasLogFromCurrentCycle(cached.data, cycleStart);
+      if (alreadyFreshThisCycle) {
+        skipped += 1;
+        validated += 1;
+      } else {
+        await fetchMember(server, m.name, m.spec);
+        if (dataCache[key] && dataCache[key].status === 'done') validated += 1;
+        else failed += 1;
+      }
+      loaded += 1;
+      updateRefreshProgress(loaded, validated, failed, skipped, total);
+      await new Promise((resolve) => setTimeout(resolve, 0)); // dejar repintar aunque este miembro se haya salteado
+    }
+    // Si se salteó todo (o corrió muy rápido), dejamos el resumen final
+    // visible un momento antes de cerrar — si no, el modal parpadea y da la
+    // sensación de que "no hizo nada".
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    hideRefreshProgress();
+    $('refreshBtn').disabled = false;
+  }
+
+  function initAddClassSpec() {
+    const classSelect = $('classInput');
+    const specSelect = $('specInput');
+    if (!classSelect || !specSelect) return;
+
+    const classOptions = Object.entries(CLASS_MAP)
+      .map(([classI, info]) => `<option value="${classI}">${info.name}</option>`)
+      .join('');
+    classSelect.insertAdjacentHTML('beforeend', classOptions);
+
+    function refreshSpecOptions() {
+      const classI = classSelect.value;
+      const specs = classI !== '' ? (SPEC_MAP[Number(classI)] || {}) : null;
+      const options = specs
+        ? Object.entries(specs).map(([specKey, info]) => `<option value="${specKey}">${info.name} (${info.role})</option>`).join('')
+        : '';
+      specSelect.innerHTML = `<option value="">Auto (detect best)</option>${options}`;
+    }
+
+    classSelect.addEventListener('change', refreshSpecOptions);
+    refreshSpecOptions();
+  }
+
+  function addMember() {
+    const server = $('serverInput').value.trim();
+    const name = $('nameInput').value.trim();
+    const spec = $('specInput').value || AUTO_SPEC;
+    const core = $('coreInput').value.trim() || DEFAULT_CORE;
+    if (!server) { alert('Enter the server before adding characters.'); return; }
+    if (!name) { alert('Type the character name.'); return; }
+
+    config.server = server;
+    const existing = config.members.find(m => m.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      alert(`${name} is already in the roster (Core: ${existing.core || DEFAULT_CORE}). To change its Core, edit it from its profile page instead of re-adding it.`);
+      return;
+    }
+
+    config.members.push({ name, spec, core });
+    $('nameInput').value = '';
+    saveConfig();
+    render();
+    fetchMember(server, name, spec);
+  }
+
+  function removeMember(name, spec, core) {
+    config.members = config.members.filter(m => !(m.name === name && m.spec === spec && m.core === core));
+    saveConfig();
+    render();
+  }
+
+  function toggleDetail(rowId) {
+    const el = document.getElementById(rowId);
+    if (el) el.classList.toggle('open');
+  }
+
+  function buildBossDetail(data) {
+    const bosses = (data && data.bosses) || {};
+    // Normalizar: si la API devuelve un alias (ej. "Northrend Beasts"),
+    // mostrarlo con su nombre canónico ("The Beasts of Northrend").
+    const entries = Object.entries(bosses)
+      .filter(([, b]) => b && Object.keys(b).length > 0)
+      .map(([rawName, b]) => [ALIAS_TO_CANONICAL[rawName] || rawName, b]);
+    if (!entries.length) return '<div class="boss-line">No bosses recorded yet.</div>';
+    entries.sort((a, b) => (b[1].points || 0) - (a[1].points || 0));
+    return entries.map(([bossName, b]) => {
+      const dur = b.fastest_kill_duration != null ? `${Number(b.fastest_kill_duration).toFixed(1)}s` : '?';
+      const pointsColor = scoreColor(b.points);
+      const link = b.report_id ? `<a href="https://uwu-logs.xyz/reports/${b.report_id}/" target="_blank" rel="noopener">view log</a>` : '';
+      return `<div class="boss-line"><span>${bossName}</span><span><strong style="color:${pointsColor}">${formatScore(b.points)}</strong> · ${dur} · ${link}</span></div>`;
+    }).join('');
+  }
+
+  function renderCoreFilterSelect() {
+    const select = $('coreFilterSelect');
+    if (!select) return;
+    const cores = getCores();
+
+    if (activeCoreFilter !== ALL_CORES && !cores.includes(activeCoreFilter)) {
+      activeCoreFilter = ALL_CORES;
+    }
+
+    const countFor = (core) => config.members.filter((m) => (m.core || DEFAULT_CORE) === core).length;
+    const options = [
+      `<option value="${ALL_CORES}">General (${config.members.length})</option>`,
+      ...cores.map((c) => `<option value="${c.replace(/"/g, '&quot;')}">${c} (${countFor(c)})</option>`),
+    ];
+    select.innerHTML = options.join('');
+    select.value = activeCoreFilter;
+  }
+
+  function renderRoleFilterSelect() {
+    const select = $('roleFilterSelect');
+    if (!select) return;
+
+    // Contamos roles solo entre los que ya tienen data cargada (el rol se
+    // deriva de class_i + spec, que vienen en la respuesta de la API).
+    const roleCount = { Damage: 0, Healing: 0 };
+    config.members.forEach((m) => {
+      const key = memberKey(config.server || $('serverInput').value.trim(), m.name, m.spec);
+      const entry = dataCache[key];
+      if (entry && entry.status === 'done') {
+        const spec = entry.detectedSpec || m.spec;
+        const role = getSpecInfo(entry.data.class_i, spec).role;
+        roleCount[role] = (roleCount[role] || 0) + 1;
+      }
+    });
+
+    const options = [ALL_ROLES, 'Damage', 'Healing'].map((role) => {
+      const count = role === ALL_ROLES ? config.members.length : (roleCount[role] || 0);
+      return `<option value="${role}">${ROLE_LABELS[role]} (${count})</option>`;
+    });
+    select.innerHTML = options.join('');
+    select.value = activeRoleFilter;
+  }
+
+  function initRosterFilterControls() {
+    const coreSelect = $('coreFilterSelect');
+    if (coreSelect) {
+      coreSelect.addEventListener('change', () => {
+        activeCoreFilter = coreSelect.value;
+        render();
+      });
+    }
+    const roleSelect = $('roleFilterSelect');
+    if (roleSelect) {
+      roleSelect.addEventListener('change', () => {
+        activeRoleFilter = roleSelect.value;
+        render();
+      });
+    }
+    const clearBtn = $('clearFiltersBtn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        activeCoreFilter = ALL_CORES;
+        activeRoleFilter = ALL_ROLES;
+        activeClassFilter = '';
+        activeSpecFilter = '';
+        syncClassSpecSelects();
+        populateSpecFilterOptions();
+        render();
+      });
+    }
+    const clearBossClassBtn = $('clearBossClassFilterBtn');
+    if (clearBossClassBtn) {
+      clearBossClassBtn.addEventListener('click', () => {
+        activeClassFilter = '';
+        activeSpecFilter = '';
+        syncClassSpecSelects();
+        populateSpecFilterOptions();
+        render();
+      });
+    }
+  }
+
+  // Pares de <select> Clase/Spec que existen en la UI: el del Roster y el de
+  // "Ranking por boss". Ambos controlan el mismo estado global
+  // (activeClassFilter/activeSpecFilter) y se mantienen sincronizados entre sí.
+  const CLASS_SPEC_SELECT_IDS = [
+    ['classFilterSelect', 'specFilterSelect'],
+    ['bossClassFilterSelect', 'bossSpecFilterSelect'],
+  ];
+
+  function initClassFilter() {
+    const classOptions = Object.entries(CLASS_MAP)
+      .map(([classI, info]) => `<option value="${classI}">${info.name}</option>`)
+      .join('');
+
+    CLASS_SPEC_SELECT_IDS.forEach(([classId, specId]) => {
+      const classSelect = $(classId);
+      if (!classSelect) return;
+      classSelect.insertAdjacentHTML('beforeend', classOptions);
+
+      classSelect.addEventListener('change', () => {
+        activeClassFilter = classSelect.value;
+        activeSpecFilter = '';
+        syncClassSpecSelects();
+        populateSpecFilterOptions();
+        render();
+      });
+
+      const specSelect = $(specId);
+      if (specSelect) {
+        specSelect.addEventListener('change', () => {
+          activeSpecFilter = specSelect.value;
+          syncClassSpecSelects();
+          render();
+        });
+      }
+    });
+  }
+
+  // Después de que uno de los dos selects de Clase cambia, refleja el mismo
+  // valor en el otro (Roster <-> Ranking por boss), para que no queden
+  // desincronizados visualmente.
+  function syncClassSpecSelects() {
+    CLASS_SPEC_SELECT_IDS.forEach(([classId]) => {
+      const classSelect = $(classId);
+      if (classSelect && classSelect.value !== activeClassFilter) classSelect.value = activeClassFilter;
+    });
+  }
+
+  function populateSpecFilterOptions() {
+    const specs = activeClassFilter ? (SPEC_MAP[Number(activeClassFilter)] || {}) : null;
+    const options = specs
+      ? Object.entries(specs).map(([specKey, info]) => `<option value="${specKey}">${info.name} (${info.role})</option>`).join('')
+      : '';
+
+    CLASS_SPEC_SELECT_IDS.forEach(([, specId]) => {
+      const specSelect = $(specId);
+      if (!specSelect) return;
+      if (!activeClassFilter) {
+        specSelect.innerHTML = '<option value="">All specs</option>';
+        specSelect.disabled = true;
+        return;
+      }
+      specSelect.innerHTML = `<option value="">All specs</option>${options}`;
+      specSelect.disabled = false;
+      specSelect.value = activeSpecFilter;
+    });
+  }
+
+  function renderCoreDatalist() {
+    const datalist = $('coreListOptions');
+    datalist.innerHTML = getCores().map((c) => `<option value="${c.replace(/"/g, '&quot;')}"></option>`).join('');
+  }
+
+  function getFilteredRows() {
+    const server = config.server || $('serverInput').value.trim();
+    const visibleMembers = activeCoreFilter === ALL_CORES
+      ? config.members
+      : config.members.filter((m) => (m.core || DEFAULT_CORE) === activeCoreFilter);
+
+    let rows = visibleMembers.map((m) => {
+      const key = memberKey(server, m.name, m.spec);
+      const entry = dataCache[key] || { status: 'idle' };
+      return { ...m, entry };
+    });
+
+    if (activeRoleFilter !== ALL_ROLES) {
+      // El rol se deriva de class_i + spec, que solo conocemos una vez que
+      // cargó la data — filas sin data todavía quedan fuera del filtro.
+      rows = rows.filter((r) => {
+        if (r.entry.status !== 'done') return false;
+        const spec = r.entry.detectedSpec || r.spec;
+        return getSpecInfo(r.entry.data.class_i, spec).role === activeRoleFilter;
+      });
+    }
+
+    if (activeClassFilter) {
+      rows = rows.filter((r) => r.entry.status === 'done' && String(r.entry.data.class_i) === activeClassFilter);
+    }
+    if (activeSpecFilter) {
+      rows = rows.filter((r) => {
+        if (r.entry.status !== 'done') return false;
+        const spec = r.entry.detectedSpec || r.spec;
+        return String(spec) === activeSpecFilter;
+      });
+    }
+
+    const withData = rows.filter(r => r.entry.status === 'done');
+    const others = rows.filter(r => r.entry.status !== 'done');
+    return { server, rows, withData, others };
+  }
+
+  function render() {
+    renderCoreFilterSelect();
+    renderRoleFilterSelect();
+    renderCoreDatalist();
+
+    const { rows, withData, others } = getFilteredRows();
+    withData.sort((a, b) => {
+      const pa = (a.entry.data && (a.entry.data.overall_points || a.entry.data.points)) || 0;
+      const pb = (b.entry.data && (b.entry.data.overall_points || b.entry.data.points)) || 0;
+      return pb - pa;
+    });
+
+    const maxPoints = withData.length
+      ? Math.max(...withData.map(r => (r.entry.data.overall_points || r.entry.data.points || 0)))
+      : 1;
+
+    const ordered = [...withData, ...others];
+    const body = $('rosterBody');
+
+    if (!ordered.length) {
+      body.innerHTML = `<div class="empty-state">No members added to the roster yet.<br/>Add the first one from the form above.</div>`;
+    } else {
+      body.innerHTML = ordered.map((r, idx) => {
+        const isRanked = r.entry.status === 'done';
+        const guildRank = isRanked ? withData.findIndex(x => x.name === r.name && x.spec === r.spec && x.core === r.core) + 1 : null;
+        const rankClass = guildRank === 1 ? 'top1' : guildRank === 2 ? 'top2' : guildRank === 3 ? 'top3' : '';
+        const classInfo = isRanked ? (CLASS_MAP[r.entry.data.class_i] || { name: '—', color: '#9a9fab' }) : { name: '', color: '#9a9fab' };
+        const points = isRanked ? (r.entry.data.overall_points || r.entry.data.points || 0) : 0;
+        const serverRank = isRanked ? (r.entry.data.overall_rank || r.entry.data.rank) : null;
+        const barWidth = isRanked && maxPoints ? Math.max(4, Math.round((points / maxPoints) * 100)) : 0;
+        const rowId = `detail-${idx}-${r.name}-${r.spec}`.replace(/[^a-zA-Z0-9-]/g, '');
+
+        const specValue = (isRanked && r.entry.detectedSpec) ? r.entry.detectedSpec : r.spec;
+        const specInfo = isRanked ? getSpecInfo(r.entry.data.class_i, specValue) : null;
+        const autoTag = (isRanked && r.entry.detectedSpec) ? '<span class="auto-tag" title="Auto-detected spec: the one with the most points">auto</span>' : '';
+        const isHealer = isRanked && specInfo && specInfo.role === 'Healing';
+
+        let statusHtml = '';
+        if (r.entry.status === 'loading') statusHtml = `<div class="status-loading">Loading…</div>`;
+        if (r.entry.status === 'error') statusHtml = `<div class="status-error" title="${r.entry.error}">Error fetching data</div>`;
+        if (r.entry.status === 'idle') statusHtml = `<div class="status-loading">No data yet</div>`;
+
+        return `
+          <div class="member-row" data-row="${rowId}">
+            <div class="rank-badge ${isHealer ? '' : rankClass}" title="${isHealer ? 'Healers are excluded from the damage-based ranking' : ''}">${isHealer ? '–' : (guildRank || '–')}</div>
+            <div class="member-name-cell">
+              <div class="member-name" style="color:${classInfo.color || 'var(--text)'}">${isRanked ? specIconHtml(r.entry.data.class_i, Number(specValue), 20) : ''}<span>${r.name}</span></div>
+              <div class="member-sub">${classInfo.name || ''}${activeCoreFilter === ALL_CORES ? ` · ${r.core || DEFAULT_CORE}` : ''}</div>
+              ${statusHtml}
+            </div>
+            <div class="spec-tag">
+              ${isRanked ? `<span class="role-badge role-${specInfo.role}">${specInfo.role}${isHealer ? ' ⚠' : ''}</span>` : ''}
+              <div>${isRanked ? specInfo.name : (r.spec === AUTO_SPEC ? 'Auto' : `Spec ${r.spec}`)} ${autoTag}</div>
+            </div>
+            <div class="power-bar-wrap" title="${isHealer ? "uwu-logs.xyz only tracks damage, not healing — this is this healer's damage, not their HPS" : ''}">
+              <div class="power-bar-track"><div class="power-bar-fill" style="width:${isRanked && !isHealer ? barWidth : 0}%; background:${isHealer ? 'var(--text-dim)' : (classInfo.color || 'var(--gold)')}"></div></div>
+              <div class="power-bar-value" style="color:${isHealer ? 'var(--text-dim)' : (isRanked ? scoreColor(points) : 'var(--text-dim)')}">${isRanked ? (isHealer ? `${formatScore(points)} (dmg)` : formatScore(points)) : '–'}</div>
+            </div>
+            <div class="server-rank">${isHealer ? '–' : (serverRank ? '#' + serverRank : '–')}</div>
+            <button class="remove-btn" title="Remove from roster" data-remove="${r.name}::${r.spec}::${r.core || DEFAULT_CORE}">✕</button>
+          </div>
+          <div class="detail-panel" id="${rowId}" style="display:none;">
+            ${isRanked ? buildBossDetail(r.entry.data) : (r.entry.status === 'error' ? r.entry.error : 'No data yet for this character.')}
+          </div>
+        `;
+      }).join('');
+
+      // listeners
+      body.querySelectorAll('.member-row').forEach(rowEl => {
+        rowEl.addEventListener('click', (e) => {
+          if (e.target.closest('.remove-btn') || e.target.closest('.member-name')) return;
+          toggleDetail(rowEl.dataset.row);
+        });
+      });
+      body.querySelectorAll('.remove-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const [name, spec, core] = btn.dataset.remove.split('::');
+          removeMember(name, spec, core);
+        });
+      });
+
+      // trigger bar fill animation
+      requestAnimationFrame(() => {
+        body.querySelectorAll('.power-bar-fill').forEach(el => {
+          const w = el.style.width;
+          el.style.width = '0%';
+          requestAnimationFrame(() => { el.style.width = w; });
+        });
+      });
+    }
+
+    // summary stats (reflejan la vista filtrada actual: General o el Core activo)
+    // Los healers quedan afuera de promedio/mejor-rank: uwu-logs.xyz no trackea
+    // HPS, así que su "score" acá es en realidad su daño (irrelevante para su
+    // rol) y arrastraría el promedio del guild hacia abajo injustamente.
+    $('statMembers').textContent = rows.length;
+    const dpsWithData = withData.filter((r) => {
+      const spec = r.entry.detectedSpec || r.spec;
+      return getSpecInfo(r.entry.data.class_i, spec).role !== 'Healing';
+    });
+    if (dpsWithData.length) {
+      const avg = dpsWithData.reduce((s, r) => s + (r.entry.data.overall_points || r.entry.data.points || 0), 0) / dpsWithData.length;
+      $('statAvg').textContent = formatScore(avg);
+      const bestRank = Math.min(...dpsWithData.map(r => r.entry.data.overall_rank || r.entry.data.rank || Infinity));
+      $('statBest').textContent = isFinite(bestRank) ? '#' + bestRank : '–';
+    } else {
+      $('statAvg').textContent = '–';
+      $('statBest').textContent = '–';
+    }
+
+    // Desglose de puntos prom. por core, solo en la vista General (y si hay 2+ cores).
+    // Respeta los filtros de rol/clase/spec activos, igual que el promedio de arriba.
+    const breakdownEl = $('coreAvgBreakdown');
+    if (breakdownEl) {
+      const cores = getCores();
+      if (activeCoreFilter === ALL_CORES && cores.length > 1 && dpsWithData.length) {
+        const byCore = {};
+        dpsWithData.forEach((r) => {
+          const core = r.core || DEFAULT_CORE;
+          const points = r.entry.data.overall_points || r.entry.data.points || 0;
+          if (!byCore[core]) byCore[core] = { sum: 0, count: 0 };
+          byCore[core].sum += points;
+          byCore[core].count += 1;
+        });
+        breakdownEl.innerHTML = cores
+          .filter((c) => byCore[c])
+          .map((c) => `<div class="core-avg-line"><span>${c}</span><span>${formatScore(byCore[c].sum / byCore[c].count)}</span></div>`)
+          .join('');
+      } else {
+        breakdownEl.innerHTML = '';
+      }
+    }
+
+    const anyFetched = Object.values(dataCache).some(v => v.fetchedAt);
+    if (anyFetched) {
+      const latest = Object.values(dataCache).filter(v => v.fetchedAt).sort((a, b) => new Date(b.fetchedAt) - new Date(a.fetchedAt))[0];
+      $('lastUpdated').textContent = `Last updated: ${new Date(latest.fetchedAt).toLocaleString()}`;
+    } else {
+      $('lastUpdated').textContent = '';
+    }
+
+    renderBossView();
+    renderPlayerProfile();
+  }
+
+  // Lista de jefes conocidos: unión de las keys de `bosses` de todos los
+  // personajes ya cargados, en el orden en que aparecen (la API los devuelve
+  // siempre en el mismo orden para todos, así que alcanza con leerlos del
+  // primer personaje con datos). Si se pasa `raidFilter`, solo devuelve los
+  // jefes de esa raid (ver BOSS_RAID_MAP — la API mezcla jefes de varias
+  // raids en la misma respuesta).
+  // Jefes vistos en la data ya cargada (independiente de si están mapeados
+  // a una raid conocida o no) — se usa solo para detectar jefes "Otros".
+  function getSeenBossNames() {
+    const seen = [];
+    Object.values(dataCache).forEach((entry) => {
+      if (entry.status !== 'done' || !entry.data || !entry.data.bosses) return;
+      Object.keys(entry.data.bosses).forEach((bossName) => {
+        if (!seen.includes(bossName)) seen.push(bossName);
+      });
+    });
+    return seen;
+  }
+
+  // Lista de jefes para el select "Ver". Para una raid conocida (o "todas"),
+  // se muestran los jefes CANÓNICOS de la tabla siempre — así se puede
+  // elegir una raid entera aunque todavía no haya ningún log cargado para
+  // ella. "Otros" sigue siendo dinámico: solo lista jefes que realmente
+  // aparecieron en la data y no están mapeados a ninguna raid conocida.
+  // Si se pasa `phaseFilter`, se intersecta con los jefes de esa fase (ej.
+  // Vault of Archavon solo aporta el jefe correspondiente a esa fase, no los
+  // 4 juntos).
+  function getBossNames(raidFilter, phaseFilter) {
+    let list;
+    if (raidFilter === 'Other') {
+      list = getSeenBossNames().filter((b) => getRaidForBoss(b) === 'Other');
+    } else if (raidFilter) {
+      list = getCanonicalBossNames(raidFilter);
+    } else {
+      const unmapped = getSeenBossNames().filter((b) => getRaidForBoss(b) === 'Other');
+      list = [...getAllCanonicalBossNames(), ...unmapped];
+    }
+    if (phaseFilter) {
+      const phaseSet = new Set(PHASE_BOSSES[phaseFilter] || []);
+      list = list.filter((b) => phaseSet.has(b));
+    }
+    return list;
+  }
+
+  // Todas las raids conocidas se listan siempre, tengan o no logs cargados
+  // todavía. "Otros" solo aparece si de verdad hay algún jefe sin mapear en
+  // la data ya cargada. Si se pasa `phaseFilter`, se recorta a las raids que
+  // tienen al menos un jefe en esa fase (para que coincida con el filtro de
+  // Fase, como pidió el usuario).
+  function getAvailableRaids(phaseFilter) {
+    if (phaseFilter) return getRaidsForPhase(phaseFilter);
+    const hasUnmapped = getSeenBossNames().some((b) => getRaidForBoss(b) === 'Other');
+    return hasUnmapped ? RAID_ORDER : RAID_ORDER.filter((r) => r !== 'Other');
+  }
+
+  // Participantes del roster (ya filtrados por Core/Rol/Clase/Spec) que
+  // tienen intentos registrados contra `bossName`, ordenados por DPS crudo
+  // (dps_max) — es la única métrica de orden ahora; el % Parse se muestra
+  // como columna aparte pero ya no cambia el orden del ranking.
+  function getBossLeaderboard(bossName, withData) {
+    const participants = withData
+      .map((r) => {
+        const bossData = findBossData(r.entry.data.bosses, bossName);
+        if (!bossData) return null;
+        const spec = r.entry.detectedSpec || r.spec;
+        return { name: r.name, core: r.core || DEFAULT_CORE, classI: r.entry.data.class_i, spec, bossData, bossName };
+      })
+      .filter(Boolean);
+
+    participants.sort((a, b) => (b.bossData.dps_max || 0) - (a.bossData.dps_max || 0));
+    return participants;
+  }
+
+  // El report_id de uwu-logs.xyz sigue siempre el formato
+  // "YY-MM-DD--HH-MM--Autor--Servidor" (ej: "26-07-10--20-03--Deathtopia--Onyxia"),
+  // así que la fecha de publicación del log sale de ahí — no es un campo aparte
+  // en la respuesta de /character. Mismo parseo que LogEntry.from_report_id en
+  // el lado Python (models.py), reimplementado acá porque el dashboard es standalone.
+  function parseReportDate(reportId) {
+    if (!reportId) return null;
+    const parts = reportId.split('--');
+    if (parts.length < 2) return null;
+    const dateBits = parts[0].split('-').map(Number);
+    const timeBits = parts[1].split('-').map(Number);
+    if (dateBits.length !== 3 || timeBits.length !== 2) return null;
+    const [yy, mm, dd] = dateBits;
+    const [hh, mi] = timeBits;
+    if ([yy, mm, dd, hh, mi].some((n) => Number.isNaN(n))) return null;
+    const date = new Date(2000 + yy, mm - 1, dd, hh, mi);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatReportDate(reportId) {
+    const d = parseReportDate(reportId);
+    if (!d) return '–';
+    return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  }
+
+  function formatDuration(seconds) {
+    if (seconds == null || Number.isNaN(seconds)) return '–';
+    const total = Math.round(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // "1:23.4" — para el timeline de casteos, con un decimal de precisión.
+  function formatTimelineMs(ms) {
+    const sign = ms < 0 ? '-' : '';
+    // Redondeamos primero a décimas de segundo enteras, así el carry a
+    // minuto se calcula sobre el valor YA redondeado (si no, un caso como
+    // 119960ms da "1:60.0" en vez de "2:00.0" — 60.0 no es un segundo válido).
+    const totalDeciSec = Math.round(Math.abs(ms) / 100);
+    const m = Math.floor(totalDeciSec / 600);
+    const s = (totalDeciSec - m * 600) / 10;
+    return `${sign}${m}:${s.toFixed(1).padStart(4, '0')}`;
+  }
+
+  // "1.2m", "850k", etc. — formato abreviado tipo Warcraft Logs para números grandes.
+  function formatAbbreviated(n) {
+    if (n == null || Number.isNaN(n)) return '–';
+    const abs = Math.abs(n);
+    if (abs >= 1e9) return `${(n / 1e9).toFixed(1).replace(/\.0$/, '')}b`;
+    if (abs >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, '')}m`;
+    if (abs >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, '')}k`;
+    return Math.round(n).toLocaleString('en-US');
+  }
+
+  function rankingValueHtml(bossData) {
+    const pts = bossData.points;
+    return `<div class="metric-value ranking-col" style="color:${scoreColor(pts)}">${formatScore(pts)}</div>`;
+  }
+
+  function dpsValueHtml(bossData) {
+    const dps = bossData.dps_max;
+    const dpsText = dps != null ? Math.round(dps).toLocaleString('en-US') : '–';
+    return `<div class="metric-value damage">${dpsText}</div>`;
+  }
+
+  function totalDamageValueHtml(bossData) {
+    const dps = bossData.dps_max;
+    const duration = bossData.fastest_kill_duration;
+    // La API no devuelve el daño total hecho, solo el DPS y la duración del
+    // kill — lo estimamos multiplicando ambos (asume que dps_max y
+    // fastest_kill_duration son del mismo intento, que es como los agrupa
+    // la API en cada boss).
+    const totalDamage = (dps != null && duration != null) ? dps * duration : null;
+    if (totalDamage == null) return '<div class="metric-value-secondary">–</div>';
+    return `<div class="metric-value-secondary" title="Estimated total damage (DPS × kill duration), the API doesn't give it directly">${formatAbbreviated(totalDamage)}</div>`;
+  }
+
+  // Externos conocidos que le pueden dar a un DPS (spell ID → nombre).
+  // Sacados de decodificar el campo `auras` de un log real contra Wowhead —
+  // no hay documentación oficial de este campo, así que esto es best-effort:
+  // si la API no incluye el spell ID exacto acá, no lo vamos a detectar.
+  const EXTERNAL_BUFFS = {
+    10060: 'Power Infusion',
+    29166: 'Innervate',
+    49016: 'Hysteria',
+    57933: 'Tricks of the Trade',
+    57934: 'Tricks of the Trade',
+    54648: 'Focus Magic',
+  };
+
+  // El campo `auras` viene como "#<spellId>/<veces>/<%uptime>/<flag>" repetido.
+  function parseAuras(aurasStr) {
+    if (!aurasStr) return [];
+    return aurasStr.split('#').filter(Boolean).map((chunk) => {
+      const [id, count, value, flag] = chunk.split('/');
+      return { id: Number(id), count: Number(count), value: Number(value), flag: Number(flag) };
+    });
+  }
+
+  // Externos reconocidos que recibió el jugador en este intento puntual
+  // (uno por tipo, aunque haya venido más de una vez).
+  function getExternalsReceived(bossData) {
+    const found = [];
+    parseAuras(bossData.auras).forEach((a) => {
+      const name = EXTERNAL_BUFFS[a.id];
+      if (name && !found.some((f) => f.name === name)) found.push({ name, count: a.count });
+    });
+    return found;
+  }
+
+  function externalsColumnHtml(bossData) {
+    const externals = getExternalsReceived(bossData);
+    if (!externals.length) return '<div class="externals-count">–</div>';
+    const tooltip = externals.map((e) => (e.count > 1 ? `${e.name} (x${e.count})` : e.name)).join(', ');
+    return `<div class="externals-count" title="${tooltip}">${externals.length}</div>`;
+  }
+
+  // ── Análisis de rotación DK (experimental) ──────────────────────────────
+  // Todo esto pega contra rutas de uwu-logs.xyz que NO son la API pública
+  // documentada (/character) sino páginas internas del sitio, encontradas
+  // leyendo su código fuente público (github.com/Ridepad/uwu-logs). No
+  // están confirmadas contra la API real todavía — necesitan el proxy local
+  // (proxy_server.py) para esquivar CORS, igual que /character.
+
+  // Replica exacta de _convert_to_html_name() del backend del sitio.
+  function bossNameToHtml(name) {
+    return name.toLowerCase().replace(/ /g, '-').replace(/'/g, '');
+  }
+
+  const dkAnalysisCache = {}; // key: `${reportId}::${bossHtml}::${playerName}` -> resultado o error
+
+  // Trae la página HTML del reporte y parsea los <a class="kill-link"> —
+  // ahí (y SOLO ahí) está la dificultad real (10N/10H/25N/25H) y los
+  // índices s/f de cada intento. El JSON de report_segments no los trae.
+  async function fetchKillLinksFromReportPage(reportId) {
+    const resp = await fetch(`/api/report_page/${reportId}`);
+    if (!resp.ok) throw new Error(`report_page HTTP ${resp.status}`);
+    const html = await resp.text();
+    const links = [];
+    // Matcheamos el tag <a ...> completo primero (sin asumir orden de
+    // atributos), y adentro buscamos class="kill-link" y href="..." por
+    // separado — el HTML real trae href ANTES que class.
+    const anchorRe = /<a\s+([^>]*)>([^<]*)<\/a>/g;
+    let m;
+    while ((m = anchorRe.exec(html)) !== null) {
+      const attrs = m[1];
+      if (!/class="kill-link"/.test(attrs)) continue;
+      const hrefMatch = attrs.match(/href="([^"]+)"/);
+      if (!hrefMatch) continue;
+      const href = hrefMatch[1].replace(/&amp;/g, '&');
+      const text = m[2].replace(/&amp;/g, '&').trim();
+      const params = new URLSearchParams(href.replace(/^\?/, ''));
+      links.push({
+        href,
+        text, // ej. "04:33.290 | 25H | Northrend Beasts"
+        boss: params.get('boss'),
+        mode: params.get('mode'), // ej. "25H"
+        attempt: params.has('attempt') ? Number(params.get('attempt')) : null,
+        s: params.has('s') ? Number(params.get('s')) : null,
+        f: params.has('f') ? Number(params.get('f')) : null,
+      });
+    }
+    return links;
+  }
+
+  // Orden de preferencia cuando hay varios Kill del mismo boss: Heroico
+  // antes que Normal, 25 antes que 10 (por si algún día hay que desempatar).
+  const MODE_PRIORITY = ['25H', '10H', '25N', '10N'];
+
+  // Busca, entre los intentos contra ese boss en el reporte, cuál fue el
+  // Kill correcto — prefiriendo Heroico sobre Normal. Devuelve
+  // {attempt, mode, s, f} con lo que necesita fetchCastsTimeline.
+  async function findKillAttemptIndex(reportId, bossHtml, playerName) {
+    let killLinks = [];
+    try {
+      const allLinks = await fetchKillLinksFromReportPage(reportId);
+      killLinks = allLinks.filter((l) => l.boss === bossHtml);
+    } catch (err) {
+      console.log(`Rotation analysis — could not fetch/parse report_page for kill-links (falling back to report_segments): ${err.message}`);
+    }
+
+    if (killLinks.length) {
+      const sorted = killLinks.slice().sort((a, b) => {
+        const pa = MODE_PRIORITY.indexOf(a.mode);
+        const pb = MODE_PRIORITY.indexOf(b.mode);
+        return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+      });
+      const chosen = sorted[0];
+      console.log(`Rotation analysis — kill-links found for boss "${bossHtml}" (preferring Heroic):\n` + JSON.stringify({ reportId, bossHtml, killLinks, chosen }, null, 2));
+      return { attempt: chosen.attempt, mode: chosen.mode, s: chosen.s, f: chosen.f };
+    }
+
+    // Fallback: método viejo (JSON de report_segments, sin dificultad).
+    // Solo se usa si no pudimos traer/parsear la página HTML.
+    const resp = await fetch(`/api/report_segments/${reportId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boss: bossHtml }),
+    });
+    if (!resp.ok) throw new Error(`report_segments HTTP ${resp.status}`);
+    const segments = await resp.json();
+    if (!Array.isArray(segments) || !segments.length) throw new Error('No attempts recorded for this boss in the report');
+    const killIndex = segments.findIndex((s) => /kill/i.test(s));
+    const chosenIndex = killIndex >= 0 ? killIndex : segments.length - 1;
+    console.log(`Rotation analysis — FALLBACK report_segments (no difficulty info) for boss "${bossHtml}":\n` + JSON.stringify({
+      reportId, bossHtml, segments, chosenIndex, chosenSegment: segments[chosenIndex],
+    }, null, 2));
+    return { attempt: chosenIndex, mode: null, s: null, f: null };
+  }
+
+  async function fetchCastsTimeline(reportId, bossHtml, attemptInfo, playerName) {
+    const info = typeof attemptInfo === 'object' && attemptInfo !== null ? attemptInfo : { attempt: attemptInfo };
+    const body = { boss: bossHtml, attempt: info.attempt, name: playerName };
+    if (info.mode != null) body.mode = info.mode;
+    if (info.s != null) body.s = info.s;
+    if (info.f != null) body.f = info.f;
+    const resp = await fetch(`/api/report_casts/${reportId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error(`report_casts HTTP ${resp.status}`);
+    return resp.json();
+  }
+
+  // Config de análisis por clase (raw.CLASS, ej. "death-knight", "warlock").
+  // Cada clase define: qué DoTs/debuffs propios van en "Rotation" (en vez de
+  // "Misc"), qué se excluye de la columna Buffs del timeline (para no
+  // duplicar lo que ya se ve en Rotation), qué casteos interesa contar en
+  // vez de uptime-ar, y opcionalmente un "cooldown snapshot" (como Gárgola
+  // para DK) si la clase tiene un cooldown icónico con buffs de
+  // fuerza/haste relevantes en el momento exacto de usarlo.
+  const CLASS_ROTATION_CONFIG = {
+    'death-knight': {
+      rotationNames: ['Desolation', 'Ghoul Frenzy', 'Bone Shield', 'Unholy Blight', 'Blood Plague', 'Frost Fever', 'Death and Decay'],
+      timelineBuffExclude: ['Blood Tap', 'Death and Decay', 'Ebon Plague', 'Blood Plague', 'Frost Fever'],
+      castCountSpells: ['Horn of Winter'],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: {
+        sectionTitle: 'Gargoyle & Haste Snapshots',
+        summonSpellName: 'Summon Gargoyle',
+        uptimeNames: ['Summon Gargoyle', 'Paragon', 'Greatness'],
+        snapshotCheckNames: ['Unholy Presence', 'Hyperspeed Accelerators', 'Speed Potion', 'Berserking'],
+        followUpSpellName: 'Blood Presence',
+        followUpLabel: 'switched to Blood Presence',
+        note: 'Gargoyle-specific damage: not calculated yet. The exact definition of what counts as a "snapshot" is still being fine-tuned.',
+      },
+    },
+    // Afflicton/Demonology/Destruction comparten estos DoTs/curses en mayor o
+    // menor medida — los que no uses simplemente no van a aparecer en tus
+    // datos (spellIds solo trae lo que realmente casteaste). No hay un
+    // cooldown único equivalente a la Gárgola entre las 3 specs, así que esa
+    // sección queda afuera para Warlock.
+    warlock: {
+      rotationNames: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
+      timelineBuffExclude: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Mago no tiene DoTs "clásicos" como DK/Warlock — la mayoría de su daño
+    // es directo (Fireball, Frostbolt, Arcane Blast). Lo poco que sí deja un
+    // debuff con inicio/fin propio en el target va acá; el resto de la
+    // rotación (nukes directos) se ve igual en el Timeline, solo que no
+    // tiene una barra de "uptime" porque no aplica. Tampoco hay un cooldown
+    // único equivalente a la Gárgola entre Fuego/Escarcha/Arcano (Combustion,
+    // Icy Veins, Arcane Power son cosas distintas), así que esa sección
+    // queda afuera para Mago también.
+    mage: {
+      rotationNames: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
+      timelineBuffExclude: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Warrior deja sobre el objetivo,
+    // compartidos en mayor o menor medida entre Armas/Furia/Protección:
+    // Rend (sangrado), Deep Wounds (proc de sangrado por crítico, pasivo de
+    // Armas), Thunder Clap (reduce velocidad de ataque), Demoralizing Shout
+    // (reduce daño físico) y Sunder Armor (stackea reducción de armadura,
+    // clave para tanks). Como con Mago/Warlock, no hay un cooldown único
+    // equivalente a la Gárgola entre las 3 specs (Bladestorm es solo de
+    // Armas), así que esa sección queda afuera.
+    warrior: {
+      rotationNames: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
+      timelineBuffExclude: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Rogue deja sobre el objetivo, y
+    // Slice and Dice (buff propio, clave del ritmo de combo points), compartidos
+    // en mayor o menor medida entre Asesinato/Combate/Sutileza: Rupture y
+    // Garrote (sangrados), Deadly Poison (veneno que stackea), Expose Armor
+    // (reduce armadura) y Hunger for Blood (buff de Combate que requiere un
+    // sangrado activo en el target para poder refrescarse). Como con
+    // Mago/Warlock/Warrior, no hay un cooldown único equivalente a la
+    // Gárgola entre las 3 specs (Cold Blood es de Asesinato, Adrenaline Rush
+    // de Combate, Shadowstep de Sutileza), así que esa sección queda afuera.
+    rogue: {
+      rotationNames: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
+      timelineBuffExclude: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Hunter deja sobre el objetivo,
+    // más Rapid Fire y Bestial Wrath (cooldowns propios que son parte
+    // central del rotation, aunque no sean DoTs), compartidos en mayor o
+    // menor medida entre Beast Mastery/Marksmanship/Survival: Serpent Sting
+    // (DoT base), Black Arrow (DoT de Survival), Hunter's Mark (debuff de
+    // largo duración) y Piercing Shots (sangrado por crítico, talento de
+    // Marksmanship). No hay un cooldown único equivalente a la Gárgola
+    // entre las 3 specs (Bestial Wrath es solo de Beast Mastery), así que
+    // esa sección queda afuera.
+    hunter: {
+      rotationNames: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
+      timelineBuffExclude: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Paladin deja sobre el objetivo, más
+    // Consecration (DoT en área bajo el jugador, igual criterio que Death and
+    // Decay para DK) y Avenging Wrath (cooldown propio compartido entre las
+    // 3 specs), compartidos en mayor o menor medida entre Retribución/Sagrado/
+    // Protección: Judgement of Wisdom, Judgement of Light y Judgement of
+    // Command son los 3 posibles resultados de Judgement — solo va a
+    // aparecer el que realmente uses, el resto simplemente no tiene datos.
+    // No hay un cooldown único equivalente a la Gárgola entre las 3 specs,
+    // así que esa sección queda afuera.
+    paladin: {
+      rotationNames: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
+      timelineBuffExclude: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Druid deja sobre el objetivo, más
+    // Savage Roar (buff propio, ritmo de combo points en Feral/Cat). Cubre
+    // Balance (Moonfire, Insect Swarm) y Feral (Rip, Rake, Mangle, Lacerate,
+    // Faerie Fire, Savage Roar) — solo van a aparecer datos en los que
+    // realmente uses según tu spec/gameplay. Restoration es healer y queda
+    // fuera del score de daño (ver limitación de HPS), pero el análisis de
+    // rotación no depende de eso. No hay un cooldown único equivalente a la
+    // Gárgola compartido entre Balance/Feral/Restoration, así que esa
+    // sección queda afuera.
+    druid: {
+      rotationNames: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
+      timelineBuffExclude: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Priest deja sobre el objetivo.
+    // Discipline y Holy son healers puros (fuera del score de daño por la
+    // limitación de HPS), así que esto en la práctica solo va a tener datos
+    // en Shadow: Shadow Word: Pain, Vampiric Touch y Devouring Plague son
+    // los 3 DoTs principales de esa spec. No hay cooldown único a snapshotear.
+    priest: {
+      rotationNames: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
+      timelineBuffExclude: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+    // Debuffs con inicio/fin propio que un Shaman deja sobre el objetivo:
+    // Flame Shock (DoT de Elemental) y Stormstrike / Frostbrand Attack
+    // (debuffs de Enhancement). Restoration es healer y queda fuera del
+    // score de daño. No hay cooldown único compartido entre las 3 specs.
+    shaman: {
+      rotationNames: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
+      timelineBuffExclude: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
+      castCountSpells: [],
+      macroSpamThreshold: 50,
+      cooldownSnapshot: null,
+    },
+  };
+  const DEFAULT_ROTATION_CONFIG = { rotationNames: [], timelineBuffExclude: [], castCountSpells: [], macroSpamThreshold: 50, cooldownSnapshot: null };
+
+  function summarizeDkTimeline(raw) {
+    const rotationCfg = CLASS_ROTATION_CONFIG[(raw.CLASS || '').toLowerCase()] || DEFAULT_ROTATION_CONFIG;
+    const summary = { totalEvents: 0, uniqueSpells: 0, spellCounts: [], uptimes: [], gcdDelayMs: null, gargoyle: null, gargoyleMeta: rotationCfg.cooldownSnapshot, castNotes: [], timeline: [], raw };
+    try {
+      const rawDataBySpell = raw.DATA || raw.data || {};
+      // El endpoint report_casts a veces devuelve eventos del JEFE ANTERIOR
+      // en el mismo reporte (confirmado: contra Lord Jaraxxus llegaron
+      // eventos con target "Icehowl", de Northrend Beasts, con timestamps
+      // muy negativos). Recortamos todo a los últimos 15s antes del pull —
+      // mismo criterio que ya usa el Timeline — así el Resumen (conteos,
+      // uptimes, GCD delay, notas de spam) no queda contaminado con datos
+      // de otro encuentro.
+      const PREPULL_WINDOW_MS = 15000;
+      const dataBySpell = {};
+      Object.keys(rawDataBySpell).forEach((id) => {
+        const events = rawDataBySpell[id];
+        dataBySpell[id] = Array.isArray(events) ? events.filter((ev) => ev[0] >= -PREPULL_WINDOW_MS) : events;
+      });
+      const spellInfo = raw.SPELLS || raw.spells || {};
+      const spellIds = Object.keys(dataBySpell);
+      const fightMs = (raw.RDURATION || 0) * 1000;
+      const selfName = raw.NAME;
+      // Nombre -> ícono (ej. "inv_sword_04"), para mostrar el ícono real
+      // de cada hechizo/buff en el timeline.
+      const iconByName = {};
+      spellIds.forEach((id) => {
+        const info = spellInfo[id];
+        const name = info && (info.name || info.NAME);
+        const icon = info && (info.icon || info.ICON);
+        if (name && icon && !iconByName[name]) iconByName[name] = icon;
+      });
+
+      summary.uniqueSpells = spellIds.length;
+      summary.spellCounts = spellIds
+        .map((id) => {
+          // El endpoint pool-ea eventos de TODOS los jugadores que castearon
+          // este spell ID bajo la misma entrada (confirmado con Horn of
+          // Winter: aparecen otros nombres de source mezclados). Filtramos
+          // por vos ANTES de contar, si no el número incluye casteos ajenos.
+          const events = Array.isArray(dataBySpell[id]) ? dataBySpell[id] : [];
+          const selfEvents = events.filter((ev) => ev[2] === selfName);
+          return {
+            id,
+            name: (spellInfo[id] && (spellInfo[id].name || spellInfo[id].NAME)) || `Spell #${id}`,
+            count: selfEvents.length,
+            hasSelfEvent: selfEvents.length > 0,
+          };
+        })
+        .filter((s) => s.hasSelfEvent)
+        .sort((a, b) => b.count - a.count);
+      summary.totalEvents = summary.spellCounts.reduce((sum, s) => sum + s.count, 0);
+
+      // Filtro clave: solo miramos auras que VOS te aplicaste (fuente del
+      // SPELL_AURA_APPLIED === tu propio nombre). Un buff de otro jugador
+      // viene con esa otra persona como fuente; eso ya nos lo saca de encima
+      // sin necesidad de una lista interminable de nombres a mano.
+      // Formato de cada evento: [ms, flag, source, target, target_guid, detalle]
+      //
+      // OJO con el target: un buff que te ponés a vos mismo (Bone Shield) y
+      // un DoT que le ponés al BOSS (Corruption, Blood Plague) son ambos
+      // "self-sourced", pero el primero tiene target=vos y el segundo
+      // target=boss. Un buff raid-wide (Horn of Winter) tiene VARIOS
+      // targets (cada miembro del raid). Por eso: si entre los targets está
+      // tu propio nombre, usamos esa serie (nos interesa el buff EN VOS); si
+      // no, usamos el target no-vos con más tiempo activo total (el boss
+      // real, no un add de paso).
+      const intervalsByName = {}; // name -> [[start,end], ...]
+      spellIds.forEach((id) => {
+        const events = dataBySpell[id];
+        if (!Array.isArray(events)) return;
+        const appliedEvents = events.filter((ev) => ev[1] === 'SPELL_AURA_APPLIED');
+        if (!appliedEvents.length) return;
+        const isSelfSourced = appliedEvents.every((ev) => ev[2] === selfName);
+        if (!isSelfSourced) return; // buff/debuff de otro jugador o del boss
+
+        const name = (spellInfo[id] && spellInfo[id].name) || `Spell #${id}`;
+
+        const buildIntervals = (evs) => {
+          let upSince = null;
+          let totalUp = 0;
+          const intervals = [];
+          evs.forEach((ev) => {
+            const [ms, flag] = ev;
+            if (flag === 'SPELL_AURA_APPLIED') {
+              if (upSince === null) upSince = ms;
+            } else if (flag === 'SPELL_AURA_REMOVED') {
+              if (upSince !== null) {
+                totalUp += ms - upSince;
+                intervals.push([upSince, ms]);
+                upSince = null;
+              }
+            }
+          });
+          if (upSince !== null && fightMs) {
+            totalUp += fightMs - upSince;
+            intervals.push([upSince, fightMs]);
+          }
+          return { intervals, totalUp };
+        };
+
+        const selfEvents = events.filter((ev) => ev[3] === selfName);
+        let chosen;
+        if (selfEvents.length) {
+          chosen = buildIntervals(selfEvents);
+        } else {
+          const byTarget = {};
+          events.forEach((ev) => {
+            const target = ev[3];
+            (byTarget[target] = byTarget[target] || []).push(ev);
+          });
+          let best = null;
+          Object.keys(byTarget).forEach((target) => {
+            const candidate = buildIntervals(byTarget[target]);
+            if (!best || candidate.totalUp > best.totalUp) best = candidate;
+          });
+          chosen = best || { intervals: [], totalUp: 0 };
+        }
+        intervalsByName[name] = chosen.intervals;
+
+        if (fightMs) {
+          let category = 'other';
+          if (rotationCfg.rotationNames.includes(name)) category = 'rotation';
+          else if (rotationCfg.cooldownSnapshot && rotationCfg.cooldownSnapshot.uptimeNames.includes(name)) category = 'gargoyle';
+          summary.uptimes.push({ id, name, pct: Math.min(100, (chosen.totalUp / fightMs) * 100), category });
+        }
+      });
+      // Orden fijo en Rotation (el mismo de tu ejemplo), el resto por %.
+      summary.uptimes.sort((a, b) => {
+        if (a.category === 'rotation' && b.category === 'rotation') {
+          return rotationCfg.rotationNames.indexOf(a.name) - rotationCfg.rotationNames.indexOf(b.name);
+        }
+        return b.pct - a.pct;
+      });
+
+      // GCD delay: juntamos todos los SPELL_CAST_SUCCESS de todos los
+      // hechizos (son casteos reales, no swings de melee ni ticks), los
+      // ordenamos por tiempo, y medimos el hueco entre casteos seguidos.
+      // Como no sabemos la duración exacta del GCD del personaje (depende
+      // de haste), usamos el hueco MÁS CHICO observado como aproximación
+      // del GCD real, y consideramos "delay" lo que hay de más en cada
+      // hueco por encima de eso. Es una aproximación, no un cálculo exacto.
+      const allCasts = [];
+      const castsBySpellName = {};
+      // Buffs propios activos en el instante ms, usando los intervalos ya
+      // armados arriba (self-sourced únicamente, igual que el resto del análisis).
+      const buffsActiveAt = (ms) => Object.keys(intervalsByName)
+        .filter((name) => !rotationCfg.timelineBuffExclude.includes(name))
+        .filter((name) => intervalsByName[name].some(([s, e]) => ms >= s && ms <= e))
+        .map((name) => ({ name, icon: iconByName[name] || null }));
+      // {ms, name, icon, buffs, rp, runes} — timeline completo del intento, del
+      // segundo 0 al final. rp (poder rúnico) y runes todavía no se calculan:
+      // el combat log no trae el estado de recursos por evento con lo que
+      // tenemos hoy del proxy.
+      //
+      // Ojo: los hechizos instantáneos traen SPELL_CAST_SUCCESS, pero los que
+      // tienen tiempo de cast (ej. Shadow Bolt, Haunt) NO traen ese evento en
+      // este formato — solo SPELL_CAST_START, y después el SPELL_DAMAGE
+      // cuando pega. Por eso decidimos QUÉ flag cuenta como "casteo" por
+      // hechizo: si aparece SPELL_CAST_SUCCESS para ese ID lo usamos (más
+      // preciso, marca cuando termina); si no, usamos SPELL_CAST_START.
+      const timelineEntries = [];
+      spellIds.forEach((id) => {
+        const name = (spellInfo[id] && spellInfo[id].name) || `Spell #${id}`;
+        const events = (dataBySpell[id] || []).slice().sort((a, b) => a[0] - b[0]);
+        const hasCastSuccess = events.some((ev) => ev[1] === 'SPELL_CAST_SUCCESS' && ev[2] === selfName);
+        const castFlag = hasCastSuccess ? 'SPELL_CAST_SUCCESS' : 'SPELL_CAST_START';
+        events.forEach((ev, idx) => {
+          if (ev[1] === castFlag && ev[2] === selfName) {
+            let target = ev[3];
+            // SPELL_CAST_START no trae target real (viene "nil") para
+            // hechizos con tiempo de cast — lo sacamos del próximo evento de
+            // ESTE MISMO hechizo que sí tenga uno (normalmente el
+            // SPELL_DAMAGE/SPELL_MISSED cuando termina de castear).
+            if (!target || target === 'nil') {
+              for (let j = idx + 1; j < events.length; j++) {
+                const nextEv = events[j];
+                if (nextEv[1] === castFlag && nextEv[2] === selfName) break; // llegamos al próximo casteo sin encontrar target
+                if (nextEv[3] && nextEv[3] !== 'nil') { target = nextEv[3]; break; }
+              }
+            }
+            allCasts.push(ev[0]);
+            (castsBySpellName[name] = castsBySpellName[name] || []).push(ev[0]);
+            timelineEntries.push({ ms: ev[0], name, icon: iconByName[name] || null, target: (target && target !== 'nil') ? target : null, buffs: buffsActiveAt(ev[0]), rp: null, runes: null });
+          }
+        });
+      });
+      allCasts.sort((a, b) => a - b);
+      timelineEntries.sort((a, b) => a.ms - b.ms);
+      summary.timeline = timelineEntries;
+      if (allCasts.length > 3) {
+        const gaps = [];
+        for (let i = 1; i < allCasts.length; i++) gaps.push(allCasts[i] - allCasts[i - 1]);
+        const usableGaps = gaps.filter((g) => g > 200); // ignoramos huecos casi 0 (dobles registros o spam de macro)
+        if (usableGaps.length) {
+          const minGap = Math.min(...usableGaps);
+          const delays = usableGaps.map((g) => Math.max(0, g - minGap));
+          summary.gcdDelayMs = delays.reduce((s, d) => s + d, 0) / delays.length;
+          summary.estimatedGcdMs = minGap;
+        }
+      }
+
+      // Casteos que nos interesa contar en vez de uptime-ar (ej. Horn of
+      // Winter: si lo casteás muchísimas veces de más, suele ser spam de
+      // macro en vez de recastearlo solo cuando se cae el buff).
+      rotationCfg.castCountSpells.forEach((name) => {
+        const times = castsBySpellName[name];
+        if (times && times.length) {
+          summary.castNotes.push({
+            name,
+            count: times.length,
+            macroSpam: times.length >= rotationCfg.macroSpamThreshold,
+          });
+        }
+      });
+
+      // Cooldown snapshot (ej. Gárgola para DK): cuántas veces se usó, qué
+      // buffs de snapshot estaban activos en el momento exacto de cada uso,
+      // y si hubo un casteo de seguimiento poco después (ej. cambio de
+      // presencia). Solo aplica a clases con cooldownSnapshot definido.
+      const snap = rotationCfg.cooldownSnapshot;
+      if (snap) {
+        const summonTimes = castsBySpellName[snap.summonSpellName] || [];
+        if (summonTimes.length) {
+          const isActiveAt = (name, t) => (intervalsByName[name] || []).some(([s, e]) => t >= s && t <= e);
+          const followUpCasts = castsBySpellName[snap.followUpSpellName] || [];
+          summary.gargoyle = {
+            uses: summonTimes.length,
+            snapshots: summonTimes.map((t) => ({
+              time: t,
+              active: snap.snapshotCheckNames.filter((name) => isActiveAt(name, t)),
+              bloodPresenceAfter: followUpCasts.some((bt) => bt > t && bt - t <= 3000),
+            })),
+          };
+        }
+      }
+      summary.debugIntervalsByName = intervalsByName; // solo para diagnóstico en consola
+    } catch (err) {
+      summary.parseError = err.message;
+    }
+    return summary;
+  }
+
+  async function runDkAnalysis(reportId, bossCanonicalName, playerName) {
+    const cacheKey = `${reportId}::${bossCanonicalName}::${playerName}`;
+    if (dkAnalysisCache[cacheKey]) return dkAnalysisCache[cacheKey];
+    const bossHtml = bossNameToHtml(bossCanonicalName);
+    const attempt = await findKillAttemptIndex(reportId, bossHtml, playerName);
+    const raw = await fetchCastsTimeline(reportId, bossHtml, attempt, playerName);
+    const result = summarizeDkTimeline(raw);
+    dkAnalysisCache[cacheKey] = result;
+    return result;
+  }
+
+  const CLASS_ANALYSIS_ENABLED = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; // las 10 clases
+
+  function dkAnalysisColumnHtml(bossData, classI) {
+    if (!CLASS_ANALYSIS_ENABLED.includes(classI)) return '<div class="dk-analysis-cell"></div>';
+    if (!bossData.report_id) return '<div class="dk-analysis-cell">–</div>';
+    return `<div class="dk-analysis-cell"><button type="button" class="dk-analysis-btn" title="Rotation analysis (experimental)">View analysis</button></div>`;
+  }
+
+  function buildLeaderboardHtml(participants, { limit } = {}) {
+    const list = limit ? participants.slice(0, limit) : participants;
+    if (!list.length) {
+      return '<div class="boss-empty">No one in the filtered roster has recorded attempts against this boss yet.</div>';
+    }
+    // La lista ya viene ordenada de mayor a menor DPS, así que el primero
+    // de `list` es el 100% de la barra y el resto es relativo a él.
+    const maxDps = Math.max(...list.map((p) => p.bossData.dps_max || 0)) || 1;
+    const head = `
+      <div class="boss-leaderboard-row boss-leaderboard-head">
+        <div class="align-right" title="Percentile score (0-100), same as the roster uses">Ranking</div>
+        <div>Class</div>
+        <div>Player</div>
+        <div>Damage</div>
+        <div class="align-right">Total</div>
+        <div class="align-right">DPS</div>
+        <div class="align-right" title="Recognized externals: Power Infusion, Innervate, Hysteria, Tricks of the Trade, Focus Magic">Externals</div>
+        <div title="Rotation analysis — experimental, coverage varies by spec">Rot</div>
+        <div class="align-right">Duration</div>
+        <div>Log</div>
+      </div>`;
+    // Ordenado por DPS crudo (dps_max). El puesto 1-10 ya se ve por el
+    // orden de la lista, así que no repetimos un contador de posición.
+    return `<div class="boss-leaderboard">${head}${list.map((p) => {
+      const classInfo = CLASS_MAP[p.classI] || { name: '—', color: '#9a9fab' };
+      const specInfo = getSpecInfo(p.classI, p.spec);
+      const isHealer = specInfo.role === 'Healing';
+      const link = p.bossData.report_id ? `<a href="https://uwu-logs.xyz/reports/${p.bossData.report_id}/" target="_blank" rel="noopener" title="View log">↗</a>` : '';
+      const dps = p.bossData.dps_max || 0;
+      const barWidth = dps ? Math.max(4, Math.round((dps / maxDps) * 100)) : 0;
+      return `
+        <div class="boss-leaderboard-row${isHealer ? ' boss-leaderboard-row-healer' : ''}">
+          ${rankingValueHtml(p.bossData)}
+          <div class="boss-class-icon" title="${classInfo.name} · ${specInfo.name} · ${specInfo.role}${isHealer ? ' — uwu-logs.xyz only tracks damage, not this healer\'s HPS' : ''}">
+            ${specIconHtml(p.classI, Number(p.spec), 20)}
+            <span class="role-dot role-dot-${specInfo.role}"></span>${isHealer ? ' ⚠' : ''}
+          </div>
+          <div class="boss-player-name" style="color:${classInfo.color}">${p.name}</div>
+          <div class="damage-bar-track"><div class="damage-bar-fill" style="width:${barWidth}%; background:${isHealer ? 'var(--text-dim)' : (classInfo.color || 'var(--gold)')}"></div></div>
+          ${totalDamageValueHtml(p.bossData)}
+          ${dpsValueHtml(p.bossData)}
+          ${externalsColumnHtml(p.bossData)}
+          <div class="dk-analysis-cell-wrap" data-report-id="${p.bossData.report_id || ''}" data-boss-name="${p.bossName || ''}" data-player-name="${p.name}" data-dps="${p.bossData.dps_max || ''}" data-duration="${p.bossData.fastest_kill_duration || ''}">${dkAnalysisColumnHtml(p.bossData, p.classI)}</div>
+          <div class="boss-duration">${formatDuration(p.bossData.fastest_kill_duration)}</div>
+          <div class="boss-log-cell"><span class="log-date-text">${formatReportDate(p.bossData.report_id)}</span>${link}</div>
+        </div>`;
+    }).join('')}</div>`;
+  }
+
+  function renderBossView() {
+    const phaseSelect = $('bossPhaseFilterSelect');
+    const raidSelect = $('bossRaidFilterSelect');
+    const scopeSelect = $('bossScopeSelect');
+    const body = $('bossViewBody');
+    if (!phaseSelect || !raidSelect || !scopeSelect || !body) return;
+
+    // Fase de contenido: recorta directamente qué raids/jefes tienen sentido
+    // mostrar (ej. Vault of Archavon solo aporta 1 jefe por fase, no los 4).
+    if (phaseSelect.options.length <= 1) {
+      phaseSelect.innerHTML = `<option value="">All phases</option>${PHASE_ORDER.map((p) => `<option value="${p}">${p}</option>`).join('')}`;
+    }
+    phaseSelect.value = bossPhaseFilter;
+
+    // La API mezcla jefes de varias raids en la misma respuesta — este select
+    // filtra por raid antes de armar la lista de jefes/bloques de abajo.
+    const availableRaids = getAvailableRaids(bossPhaseFilter);
+    const wantedRaidOptions = ['', ...availableRaids];
+    const currentRaidOptions = Array.from(raidSelect.options).map((o) => o.value);
+    if (currentRaidOptions.length !== wantedRaidOptions.length || currentRaidOptions.some((v, i) => v !== wantedRaidOptions[i])) {
+      raidSelect.innerHTML = `<option value="">All raids</option>${availableRaids.map((r) => `<option value="${r.replace(/"/g, '&quot;')}">${r}</option>`).join('')}`;
+      if (!wantedRaidOptions.includes(bossRaidFilter)) bossRaidFilter = '';
+    }
+    raidSelect.value = bossRaidFilter;
+
+    const bossNames = getBossNames(bossRaidFilter, bossPhaseFilter);
+    const currentOptions = Array.from(scopeSelect.options).map((o) => o.value);
+    const wantedOptions = ['__ALL__', ...bossNames];
+    if (currentOptions.length !== wantedOptions.length || currentOptions.some((v, i) => v !== wantedOptions[i])) {
+      scopeSelect.innerHTML = `<option value="__ALL__">Full raid (all bosses)</option>${bossNames.map((b) => `<option value="${b.replace(/"/g, '&quot;')}">${b}</option>`).join('')}`;
+      if (wantedOptions.includes(bossScope)) scopeSelect.value = bossScope;
+      else bossScope = '__ALL__';
+    }
+    scopeSelect.value = bossScope;
+
+    if (viewMode !== 'boss') return; // no hace falta pintar el body si la sección está oculta
+
+    const { withData } = getFilteredRows();
+
+    if (!withData.length) {
+      body.innerHTML = '<div class="empty-state">No roster characters have loaded data yet. Add them and wait for it to load.</div>';
+      return;
+    }
+    if (!bossNames.length) {
+      body.innerHTML = '<div class="empty-state">No one in the roster has logs against bosses from this raid/phase yet.</div>';
+      return;
+    }
+
+    if (bossScope === '__ALL__') {
+      // Raid completa: un bloque por jefe, cada uno con su propio Top 10.
+      body.innerHTML = bossNames.map((bossName) => {
+        const participants = getBossLeaderboard(bossName, withData);
+        return `
+          <div class="boss-block">
+            <div class="boss-block-header">
+              <h3>${bossName}</h3>
+            </div>
+            ${buildLeaderboardHtml(participants, { limit: TOP_N_PER_BOSS })}
+          </div>`;
+      }).join('');
+    } else {
+      // Jefe individual: vista enfocada, ranking completo del roster filtrado (sin tope de 10).
+      const participants = getBossLeaderboard(bossScope, withData);
+      body.innerHTML = `
+        <div class="boss-block boss-block-single">
+          <div class="boss-block-header">
+            <h3>${bossScope}</h3>
+          </div>
+          ${buildLeaderboardHtml(participants)}
+        </div>`;
+    }
+
+    // trigger damage-bar fill animation (mismo truco que el power-bar del roster)
+    requestAnimationFrame(() => {
+      body.querySelectorAll('.damage-bar-fill').forEach((el) => {
+        const w = el.style.width;
+        el.style.width = '0%';
+        requestAnimationFrame(() => { el.style.width = w; });
+      });
+    });
+  }
+
+  function showPlayerProfile(name) {
+    profilePlayerName = name;
+    profileReturnView = viewMode; // recordamos desde dónde entraste, para el botón "Volver"
+    $('rosterSection').style.display = 'none';
+    $('bossSection').style.display = 'none';
+    $('analysisSection').style.display = 'none';
+    $('playerSection').style.display = '';
+    renderPlayerProfile();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function hidePlayerProfile() {
+    profilePlayerName = null;
+    $('playerSection').style.display = 'none';
+    $('analysisSection').style.display = 'none';
+    $('rosterSection').style.display = profileReturnView === 'roster' ? '' : 'none';
+    $('bossSection').style.display = profileReturnView === 'boss' ? '' : 'none';
+  }
+
+  function showLogAnalysis(info) {
+    activeAnalysisData = info;
+    compareWithPlayerName = null;
+    analysisReturnView = profilePlayerName ? 'profile' : viewMode;
+    $('rosterSection').style.display = 'none';
+    $('bossSection').style.display = 'none';
+    $('playerSection').style.display = 'none';
+    $('analysisSection').style.display = '';
+    renderLogAnalysis();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function hideLogAnalysis() {
+    activeAnalysisData = null;
+    compareWithPlayerName = null;
+    $('analysisSection').classList.remove('is-comparing');
+    $('analysisSection').style.display = 'none';
+    if (analysisReturnView === 'profile' && profilePlayerName) {
+      $('playerSection').style.display = '';
+    } else if (analysisReturnView === 'boss') {
+      $('bossSection').style.display = '';
+    } else {
+      $('rosterSection').style.display = '';
+    }
+  }
+
+  // Perfil de un jugador: todos sus logs, agrupados por raid, con el
+  // promedio de % parse calculado sobre los bosses que sí tiene loggeados
+  // (distinto del overall_points que devuelve la API, que puede pesar
+  // distinto — mostramos los dos).
+  // ── Progreso en el tiempo (perfil de un jugador) ────────────────────────
+  // Lee /api/history/<server>/<name>/<spec>, que lee de data/uwu_logs.db —
+  // la misma base que ya usaba el CLI (uwu-tracker fetch), ahora también
+  // alimentada automáticamente por el proxy cada vez que la web refresca un
+  // personaje (máximo 1 snapshot cada 12h por personaje+spec, para no llenar
+  // la base de puntos casi idénticos). Si todavía no hay 2+ snapshots
+  // guardados, no hay nada que graficar todavía — se va a ir llenando solo
+  // con el uso normal de la app día a día.
+
+  function formatHistoryDate(iso) {
+    try {
+      return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  function buildProgressChartSvg(history) {
+    const W = 640;
+    const H = 150;
+    const padL = 36;
+    const padR = 10;
+    const padT = 10;
+    const padB = 22;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const points = history.map((h) => (h.overall_points || 0) / 100);
+    const minV = Math.min(...points);
+    const maxV = Math.max(...points);
+    const range = (maxV - minV) || 1;
+
+    const xy = points.map((v, i) => {
+      const x = padL + (history.length === 1 ? plotW / 2 : (i / (history.length - 1)) * plotW);
+      const y = padT + plotH - ((v - minV) / range) * plotH;
+      return [x, y];
+    });
+
+    const pathD = xy.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+    const areaD = `${pathD} L${xy[xy.length - 1][0].toFixed(1)},${(padT + plotH).toFixed(1)} L${xy[0][0].toFixed(1)},${(padT + plotH).toFixed(1)} Z`;
+    const lastColor = scoreColor(history[history.length - 1].overall_points);
+
+    const dots = xy.map(([x, y], i) => `
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${i === xy.length - 1 ? lastColor : 'var(--text-dim)'}">
+        <title>${formatHistoryDate(history[i].fetched_at)}: ${points[i].toFixed(2)}</title>
+      </circle>`).join('');
+
+    return `
+      <svg viewBox="0 0 ${W} ${H}" class="profile-history-svg" preserveAspectRatio="none">
+        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + plotH}" stroke="var(--border)" />
+        <line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="var(--border)" />
+        <path d="${areaD}" fill="var(--gold)" opacity="0.08" />
+        <path d="${pathD}" fill="none" stroke="var(--gold)" stroke-width="2" />
+        ${dots}
+        <text x="${padL}" y="${H - 6}" font-size="10" fill="var(--text-dim)">${formatHistoryDate(history[0].fetched_at)}</text>
+        <text x="${W - padR}" y="${H - 6}" font-size="10" fill="var(--text-dim)" text-anchor="end">${formatHistoryDate(history[history.length - 1].fetched_at)}</text>
+        <text x="${padL - 6}" y="${padT + 4}" font-size="10" fill="var(--text-dim)" text-anchor="end">${maxV.toFixed(0)}</text>
+        <text x="${padL - 6}" y="${padT + plotH}" font-size="10" fill="var(--text-dim)" text-anchor="end">${minV.toFixed(0)}</text>
+      </svg>`;
+  }
+
+  async function renderProfileHistoryChart(server, name, spec) {
+    const container = $('profileHistoryChart');
+    if (!container) return;
+    try {
+      const resp = await fetch(`/api/history/${encodeURIComponent(server)}/${encodeURIComponent(name)}/${encodeURIComponent(spec)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const history = await resp.json();
+
+      if (!Array.isArray(history) || history.length < 2) {
+        container.innerHTML = `<div class="profile-history-empty">Not enough history yet to chart progress (${Array.isArray(history) ? history.length : 0} snapshot${history && history.length === 1 ? '' : 's'} saved). This builds up automatically as you use the app — at most 1 snapshot every 12h per character, so check back in a day or two.</div>`;
+        return;
+      }
+
+      const delta = (history[history.length - 1].overall_points || 0) - (history[0].overall_points || 0);
+      const deltaSign = delta >= 0 ? '+' : '';
+      container.innerHTML = `
+        <div class="profile-history-head">
+          <span>Progress over time</span>
+          <span class="profile-history-delta" style="color:${delta >= 0 ? 'var(--teal)' : 'var(--danger)'}">${deltaSign}${formatScore(delta)} since ${formatHistoryDate(history[0].fetched_at)}</span>
+        </div>
+        ${buildProgressChartSvg(history)}`;
+    } catch (err) {
+      container.innerHTML = `<div class="profile-history-empty">Couldn't load history: ${err.message}. Make sure you're running <code>proxy_server.py</code>.</div>`;
+    }
+  }
+
+  function renderPlayerProfile() {
+    const body = $('playerProfileBody');
+    if (!body || !profilePlayerName) return;
+
+    const member = config.members.find((m) => m.name === profilePlayerName);
+    if (!member) {
+      body.innerHTML = '<div class="empty-state">That character is no longer in the roster.</div>';
+      return;
+    }
+    const server = config.server || $('serverInput').value.trim();
+    const key = memberKey(server, member.name, member.spec);
+    const entry = dataCache[key];
+
+    if (!entry || entry.status !== 'done') {
+      const msg = entry && entry.status === 'error'
+        ? `There was an error fetching the data: ${entry.error}`
+        : entry && entry.status === 'loading'
+          ? 'Loading data…'
+          : 'No data loaded yet for this character.';
+      body.innerHTML = `<div class="empty-state">${msg}</div>`;
+      return;
+    }
+
+    const data = entry.data;
+    const classInfo = CLASS_MAP[data.class_i] || { name: '—', color: '#9a9fab' };
+    const specValue = entry.detectedSpec || member.spec;
+    const specInfo = getSpecInfo(data.class_i, specValue);
+
+    // Todos los bosses con datos reales (normalizando alias al nombre canónico).
+    const allLoggedEntries = Object.entries(data.bosses || {})
+      .filter(([, b]) => b && Object.keys(b).length > 0)
+      .map(([rawName, b]) => [ALIAS_TO_CANONICAL[rawName] || rawName, b]);
+
+    // Filtro de fase: por defecto Phase 3 (la fase actual del server). Tanto
+    // el listado de raids/jefes de abajo como las stats de arriba (promedio,
+    // jefes con logs) se recalculan sobre esta selección.
+    const phaseSet = profilePhaseFilter ? new Set(PHASE_BOSSES[profilePhaseFilter] || []) : null;
+    const raidsToShow = phaseSet
+      ? RAID_BOSS_LIST.filter((r) => r.bosses.some((b) => phaseSet.has(b.name)))
+      : RAID_BOSS_LIST;
+    const loggedEntries = phaseSet ? allLoggedEntries.filter(([n]) => phaseSet.has(n)) : allLoggedEntries;
+
+    const avgParse = loggedEntries.length
+      ? loggedEntries.reduce((sum, [, b]) => sum + (b.points || 0), 0) / loggedEntries.length
+      : null;
+
+    const loggedNames = new Set(loggedEntries.map(([n]) => n));
+    const totalKnown = phaseSet ? phaseSet.size : getAllCanonicalBossNames().length;
+
+    const phaseOptions = ['', ...PHASE_ORDER].map((p) => `<option value="${p}" ${p === profilePhaseFilter ? 'selected' : ''}>${p || 'All phases'}</option>`).join('');
+
+    const header = `
+      <div class="profile-header">
+        <div class="boss-class-icon profile-class-icon" title="${classInfo.name} · ${specInfo.name} · ${specInfo.role}">
+          ${specIconHtml(data.class_i, Number(specValue), 32)}
+          <span class="role-dot role-dot-${specInfo.role}"></span>
+        </div>
+        <div>
+          <h2 style="color:${classInfo.color}">${member.name}</h2>
+          <div class="profile-sub">
+            ${classInfo.name} · ${specInfo.name} (${specInfo.role}) ·
+            <span class="profile-core-field">
+              Core:
+              <input type="text" id="profileCoreInput" class="profile-core-input" list="coreListOptions" value="${(member.core || DEFAULT_CORE).replace(/"/g, '&quot;')}" title="Change this character's Core" />
+            </span>
+          </div>
+        </div>
+        <div class="field profile-phase-field">
+          <label for="profilePhaseSelect">Phase</label>
+          <select id="profilePhaseSelect">${phaseOptions}</select>
+        </div>
+      </div>
+      <div class="profile-stats">
+        <div class="profile-stat">
+          <span class="val" style="color:${scoreColor(data.overall_points)}">${formatScore(data.overall_points)}</span>
+          <span class="label">Overall (API)</span>
+        </div>
+        <div class="profile-stat">
+          <span class="val">${data.overall_rank ? '#' + data.overall_rank : '–'}</span>
+          <span class="label">Rank server</span>
+        </div>
+        <div class="profile-stat">
+          <span class="val" style="color:${avgParse != null ? scoreColor(avgParse) : 'var(--text-dim)'}">${avgParse != null ? formatScore(avgParse) : '–'}</span>
+          <span class="label">Avg. % parse${profilePhaseFilter ? ` (${profilePhaseFilter})` : ''}</span>
+        </div>
+        <div class="profile-stat">
+          <span class="val">${loggedEntries.length} / ${totalKnown}</span>
+          <span class="label">Bosses with logs</span>
+        </div>
+      </div>
+      <div class="profile-history" id="profileHistoryChart">Loading progress…</div>`;
+
+    const raidBlocks = raidsToShow.map(({ raid, bosses }) => {
+      const bossesToShow = phaseSet ? bosses.filter((b) => phaseSet.has(b.name)) : bosses;
+      const rows = bossesToShow.map(({ name }) => {
+        const b = loggedNames.has(name) ? loggedEntries.find(([n]) => n === name)[1] : null;
+        if (!b) {
+          return `<div class="profile-boss-row profile-boss-row-empty"><div>${name}</div><div>–</div><div>–</div><div>–</div><div></div></div>`;
+        }
+        const link = b.report_id ? `<a href="https://uwu-logs.xyz/reports/${b.report_id}/" target="_blank" rel="noopener" title="View log">↗</a>` : '';
+        return `
+          <div class="profile-boss-row">
+            <div>${name}</div>
+            <div style="color:${scoreColor(b.points)}">${formatScore(b.points)}</div>
+            <div>${b.dps_max != null ? Math.round(b.dps_max).toLocaleString('en-US') : '–'}</div>
+            <div>${formatDuration(b.fastest_kill_duration)}</div>
+            <div>${link}</div>
+          </div>`;
+      }).join('');
+      return `
+        <div class="boss-block">
+          <div class="boss-block-header"><h3>${raid}</h3></div>
+          <div class="profile-boss-list">
+            <div class="profile-boss-row profile-boss-row-head">
+              <div>Boss</div><div>% Parse</div><div>DPS</div><div>Duration</div><div>Log</div>
+            </div>
+            ${rows}
+          </div>
+        </div>`;
+    }).join('');
+
+    body.innerHTML = header + raidBlocks;
+    renderProfileHistoryChart(server, member.name, specValue);
+
+    const phaseSelect = $('profilePhaseSelect');
+    if (phaseSelect) {
+      phaseSelect.addEventListener('change', () => {
+        profilePhaseFilter = phaseSelect.value;
+        renderPlayerProfile();
+      });
+    }
+
+    const coreInput = $('profileCoreInput');
+    if (coreInput) {
+      const commitCore = () => {
+        const newCore = coreInput.value.trim() || DEFAULT_CORE;
+        if (newCore === (member.core || DEFAULT_CORE)) return;
+        member.core = newCore;
+        saveConfig();
+        renderCoreDatalist();
+        renderCoreFilterSelect();
+        renderPlayerProfile();
+      };
+      coreInput.addEventListener('change', commitCore);
+      coreInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') coreInput.blur();
+      });
+    }
+  }
+
+  // Recolecta otros miembros del roster (sin repetir personaje) de la MISMA
+  // clase que ya tengan datos cacheados contra este boss, para poder armar
+  // la comparación de Timelines. Si no tienen nada logueado contra este
+  // boss, no aparecen (no hay con qué comparar).
+  function getCompareCandidates(classI, bossName, excludeName) {
+    const server = config.server || $('serverInput').value.trim();
+    const seen = new Set([(excludeName || '').toLowerCase()]);
+    const candidates = [];
+    config.members.forEach((m) => {
+      if (seen.has(m.name.toLowerCase())) return;
+      const key = memberKey(server, m.name, m.spec);
+      const entry = dataCache[key];
+      if (!entry || entry.status !== 'done' || !entry.data) return;
+      if (entry.data.class_i !== classI) return;
+      const bossData = findBossData(entry.data.bosses, bossName);
+      if (!bossData || !bossData.report_id) return;
+      seen.add(m.name.toLowerCase());
+      candidates.push({ name: m.name, bossData });
+    });
+    return candidates;
+  }
+
+  // Engancha el toggle de tabs Summary/Timeline dentro de UN contenedor
+  // puntual (el panel completo, o UNA de las 2 columnas cuando se está
+  // comparando) — nunca sobre todo el documento, para que las 2 columnas
+  // del compare no se pisen los tabs entre sí.
+  function wireAnalysisTabs(root) {
+    root.querySelectorAll('.dk-tab').forEach((tabBtn) => {
+      tabBtn.addEventListener('click', () => {
+        root.querySelectorAll('.dk-tab').forEach((b) => b.classList.toggle('active', b === tabBtn));
+        root.querySelectorAll('.dk-tab-pane').forEach((pane) => {
+          pane.style.display = pane.dataset.dkpane === tabBtn.dataset.dktab ? '' : 'none';
+        });
+      });
+    });
+  }
+
+  // Arma el HTML de UN panel de análisis (Summary + Timeline) a partir de un
+  // `result` ya resuelto por runDkAnalysis(). Se usa tanto para la vista de
+  // un solo jugador como para cada columna del compare — nunca toca el DOM
+  // directamente, solo devuelve el string.
+  function buildAnalysisPanelHtml(result, info) {
+    const { playerName, bossName, dps, duration } = info;
+    const isDkClass = (result.raw.CLASS || '').toLowerCase() === 'death-knight';
+    const rotationUptimes = result.uptimes.filter((u) => u.category === 'rotation');
+    const gargoyleUptimes = result.uptimes.filter((u) => u.category === 'gargoyle');
+    const otherUptimes = result.uptimes.filter((u) => u.category === 'other');
+
+    const INFO_ONLY_UPTIMES = new Set(['Bone Shield']);
+    const EVAL_THRESHOLD = 90;
+
+    const uptimeRow = (u) => {
+      if (INFO_ONLY_UPTIMES.has(u.name)) {
+        return `<div class="dk-row dk-row-info"><span class="dk-row-icon">ℹ</span><span class="dk-row-label">${u.name} uptime</span><span class="dk-row-value">${u.pct.toFixed(2)}%</span></div>`;
+      }
+      const good = u.pct >= EVAL_THRESHOLD;
+      return `<div class="dk-row ${good ? 'dk-row-good' : 'dk-row-warn'}"><span class="dk-row-icon">${good ? '✔' : '⚠'}</span><span class="dk-row-label">${u.name} uptime</span><span class="dk-row-value">${u.pct.toFixed(2)}%</span></div>`;
+    };
+    const infoRow = (label, value) => `<div class="dk-row dk-row-info"><span class="dk-row-icon">ℹ</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
+    const checkRow = (label, value, ok) => `<div class="dk-row ${ok ? 'dk-row-good' : 'dk-row-warn'}"><span class="dk-row-icon">${ok ? '✔' : '⚠'}</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
+
+    const castNoteRows = result.castNotes.map((c) =>
+      c.macroSpam
+        ? checkRow(`${c.name} casts (possible macro spam)`, c.count, false)
+        : infoRow(`${c.name} casts`, c.count)
+    ).join('');
+
+    const headerPlayerName = playerName || result.raw.NAME || '';
+    const headerBossName = bossName || '';
+    const headerDps = dps ? Math.round(Number(dps)).toLocaleString('en-US') : '–';
+    const headerDuration = duration ? formatDuration(Number(duration)) : '–';
+    const classInfo = Object.values(CLASS_MAP).find((c) => c.name.toLowerCase().replace(/ /g, '-') === (result.raw.CLASS || '').toLowerCase());
+    const headerNameColor = (classInfo && classInfo.color) || '#e9e5dc';
+    const header = `
+      <div class="dk-analysis-header">
+        <div class="dk-analysis-header-row"><span>Player:</span><span style="color: ${headerNameColor}; font-weight: 600;">${headerPlayerName}</span></div>
+        <div class="dk-analysis-header-row"><span>Encounter:</span><span class="dk-header-boss">${headerBossName}</span></div>
+        <div class="dk-analysis-header-row"><span>DPS:</span><span>${headerDps}</span></div>
+        <div class="dk-analysis-header-row"><span>Duration:</span><span>${headerDuration}</span></div>
+      </div>`;
+
+    const speedSection = result.gcdDelayMs != null
+      ? `<div class="dk-analysis-section-title">Speed</div>
+         <div class="dk-analysis-spells">
+           ${infoRow('Avg. GCD delay (approx.)', `${result.gcdDelayMs.toFixed(0)} ms`)}
+         </div>`
+      : '';
+
+    const rotationSection = (rotationUptimes.length || castNoteRows)
+      ? `<div class="dk-analysis-section-title">Rotation</div>
+         <div class="dk-analysis-spells">${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}</div>`
+      : '';
+
+    const snapMeta = result.gargoyleMeta;
+    const gargoyleSection = result.gargoyle && snapMeta
+      ? `<div class="dk-analysis-section-title">${snapMeta.sectionTitle}</div>
+         <div class="dk-analysis-spells">
+           ${infoRow('Times used', result.gargoyle.uses)}
+           ${result.gargoyle.snapshots.map((s, i) => `
+             ${checkRow(`Use #${i + 1} — snapshot`, s.active.length ? s.active.join(', ') : 'none', !!s.active.length)}
+             ${checkRow(`Use #${i + 1} — ${snapMeta.followUpLabel}`, s.bloodPresenceAfter ? 'yes' : 'no', s.bloodPresenceAfter)}
+           `).join('')}
+           ${gargoyleUptimes.map(uptimeRow).join('')}
+         </div>
+         <div class="dk-analysis-note">${snapMeta.note}</div>`
+      : '';
+
+    const miscSection = otherUptimes.length
+      ? `<div class="dk-analysis-section-title">Miscellaneous</div>
+         <div class="dk-analysis-spells">${otherUptimes.map(uptimeRow).join('')}</div>`
+      : '';
+
+    const nothingFound = !rotationUptimes.length && !otherUptimes.length && !result.gargoyle && !castNoteRows
+      ? '<div class="dk-analysis-spell-row"><span>No self-sourced auras with a start/end were detected in this attempt</span></div>'
+      : '';
+
+    const summaryTabHtml = `
+      ${header}
+      <div class="dk-analysis-summary">
+        <strong>${result.totalEvents}</strong> total events across <strong>${result.uniqueSpells}</strong> distinct spells during the kill attempt.
+      </div>
+      ${speedSection}
+      ${rotationSection}
+      ${gargoyleSection}
+      ${miscSection}
+      ${nothingFound}
+      <details class="dk-analysis-raw-toggle">
+        <summary>View cast count by spell</summary>
+        <div class="dk-analysis-spells">
+          ${result.spellCounts.slice(0, 15).map((s) => `<div class="dk-analysis-spell-row"><span>${s.name}</span><span>${s.count}</span></div>`).join('')}
+        </div>
+      </details>
+      ${isDkClass ? '<div class="dk-analysis-note">Rune drift and wasted runic power are not calculated yet.</div>' : ''}`;
+
+    // Ícono de wowhead a partir del nombre del ícono crudo (ej. "inv_sword_04").
+    const iconImgHtml = (icon, name, size) => icon
+      ? `<img class="dk-icon" src="https://wow.zamimg.com/images/wow/icons/medium/${icon}.jpg" alt="${name}" title="${name}" width="${size}" height="${size}">`
+      : '';
+
+    // Orden cronológico, recortando el pre-pull a los últimos 15s antes del pull.
+    const PREPULL_WINDOW_MS = 15000;
+    const timelineRowsDesc = result.timeline
+      .filter((t) => t.ms >= -PREPULL_WINDOW_MS)
+      .sort((a, b) => a.ms - b.ms);
+
+    // DK usa una <table> normal (funciona bien, no tocar). Otras clases
+    // (por ahora Warlock) usan un CSS Grid separado y propio —
+    // deliberadamente SIN compartir clases/CSS con la tabla de DK, para
+    // que un ajuste de una no le rompa nada a la otra nunca más.
+    const timelineTabHtml = isDkClass ? `
+      <div class="dk-analysis-summary">
+        <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+      </div>
+      <div class="dk-analysis-timeline-table-wrap">
+        <table class="dk-analysis-timeline-table has-dk-cols">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Ability</th>
+              <th>Target</th>
+              <th>Buffs</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${timelineRowsDesc.map((t, i) => {
+              const prevMs = i === 0 ? null : timelineRowsDesc[i - 1].ms;
+              const gapSec = prevMs === null ? null : (t.ms - prevMs) / 1000;
+              const gapHtml = gapSec !== null ? ` <span class="dk-timeline-gap">(+${gapSec.toFixed(2)}s)</span>` : '';
+              return `
+              <tr>
+                <td class="dk-timeline-time">${formatTimelineMs(t.ms)}${gapHtml}</td>
+                <td class="dk-timeline-spell">${iconImgHtml(t.icon, t.name, 26)}<span>${t.name}</span></td>
+                <td class="dk-timeline-dim">${t.target && t.target !== 'nil' ? t.target : '–'}</td>
+                <td class="dk-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>` : `
+      <div class="dk-analysis-summary">
+        <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+      </div>
+      <div class="lock-timeline-wrap">
+        <div class="lock-timeline-grid">
+          <div class="lock-timeline-head">Time</div>
+          <div class="lock-timeline-head">Ability</div>
+          <div class="lock-timeline-head">Target</div>
+          <div class="lock-timeline-head">Buffs</div>
+          ${timelineRowsDesc.map((t, i) => {
+            const prevMs = i === 0 ? null : timelineRowsDesc[i - 1].ms;
+            const gapSec = prevMs === null ? null : (t.ms - prevMs) / 1000;
+            const gapHtml = gapSec !== null ? ` <span class="lock-timeline-gap">(+${gapSec.toFixed(2)}s)</span>` : '';
+            return `
+            <div class="lock-timeline-cell lock-timeline-time">${formatTimelineMs(t.ms)}${gapHtml}</div>
+            <div class="lock-timeline-cell lock-timeline-spell">${iconImgHtml(t.icon, t.name, 26)}<span>${t.name}</span></div>
+            <div class="lock-timeline-cell lock-timeline-target">${t.target && t.target !== 'nil' ? t.target : '–'}</div>
+            <div class="lock-timeline-cell lock-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</div>`;
+          }).join('')}
+        </div>
+      </div>`;
+
+    return `
+      <div class="dk-analysis-panel">
+        <div class="dk-analysis-warning">⚠ Experimental — undocumented uwu-logs.xyz endpoints. GCD delay is approximate; everything else is calculated from the real response, filtered by source (only your own buffs/debuffs).</div>
+        <div class="dk-tabs">
+          <button type="button" class="dk-tab active" data-dktab="resumen">Summary</button>
+          <button type="button" class="dk-tab" data-dktab="timeline">Timeline</button>
+        </div>
+        <div class="dk-tab-pane" data-dkpane="resumen">${summaryTabHtml}</div>
+        <div class="dk-tab-pane" data-dkpane="timeline" style="display:none;">${timelineTabHtml}</div>
+      </div>`;
+  }
+
+  // Corre el análisis completo para un jugador puntual y devuelve el HTML
+  // de su panel ya armado (o un panel de error), sin tocar el DOM. Se usa
+  // para las 2 columnas del compare.
+  async function buildPlayerAnalysisColumn(reportId, bossName, playerName, dps, duration) {
+    try {
+      const result = await runDkAnalysis(reportId, bossName, playerName);
+      if (result.parseError) {
+        return `<div class="dk-analysis-panel"><div class="dk-analysis-error">Couldn't parse the site's response (unexpected format): ${result.parseError}. Check the browser console (F12 → Console tab) — the full response is there.</div></div>`;
+      }
+      return buildAnalysisPanelHtml(result, { playerName, bossName, dps, duration });
+    } catch (err) {
+      return `<div class="dk-analysis-panel"><div class="dk-analysis-error">Could not fetch the analysis: ${err.message}. Make sure you're running <code>proxy_server.py</code> (this isn't the public API, it needs the proxy).</div></div>`;
+    }
+  }
+
+  async function renderLogAnalysis() {
+    const body = $('analysisBody');
+    if (!body || !activeAnalysisData) return;
+
+    const { reportId, bossName, playerName, dps, duration } = activeAnalysisData;
+
+    // ── Modo comparación: 2 columnas lado a lado ──────────────────────────
+    if (compareWithPlayerName) {
+      $('analysisSection').classList.add('is-comparing');
+      body.innerHTML = '<div class="dk-analysis-panel">Loading comparison…</div>';
+
+      const server = config.server || $('serverInput').value.trim();
+      const cmpMember = config.members.find((m) => m.name === compareWithPlayerName);
+      const cmpEntry = cmpMember ? dataCache[memberKey(server, cmpMember.name, cmpMember.spec)] : null;
+      const cmpBossData = cmpEntry && cmpEntry.data ? findBossData(cmpEntry.data.bosses, bossName) : null;
+
+      const [leftHtml, rightHtml] = await Promise.all([
+        buildPlayerAnalysisColumn(reportId, bossName, playerName, dps, duration),
+        cmpBossData
+          ? buildPlayerAnalysisColumn(cmpBossData.report_id, bossName, compareWithPlayerName, cmpBossData.dps_max, cmpBossData.fastest_kill_duration)
+          : Promise.resolve(`<div class="dk-analysis-panel"><div class="dk-analysis-error">${compareWithPlayerName} has no data against this boss.</div></div>`),
+      ]);
+
+      body.innerHTML = `
+        <div class="compare-toolbar">
+          <button type="button" class="secondary" id="stopCompareBtn">✕ Stop comparing</button>
+        </div>
+        <div class="compare-grid">
+          <div class="compare-col">${leftHtml}</div>
+          <div class="compare-col">${rightHtml}</div>
+        </div>`;
+      body.querySelectorAll('.compare-col').forEach((col) => wireAnalysisTabs(col));
+      const stopBtn = $('stopCompareBtn');
+      if (stopBtn) stopBtn.addEventListener('click', () => { compareWithPlayerName = null; renderLogAnalysis(); });
+      return;
+    }
+
+    // ── Modo normal: un solo jugador ──────────────────────────────────────
+    $('analysisSection').classList.remove('is-comparing');
+    body.innerHTML = '<div class="dk-analysis-panel">Loading analysis…</div>';
+
+    try {
+      const result = await runDkAnalysis(reportId, bossName, playerName);
+
+      const raw = result.raw || {};
+      const dataObj = raw.DATA || raw.data || {};
+      const spellsObj = raw.SPELLS || raw.spells || {};
+      const rotationCfg = CLASS_ROTATION_CONFIG[(raw.CLASS || '').toLowerCase()] || DEFAULT_ROTATION_CONFIG;
+      // Nombres de interés para el diagnóstico: los de la config de la clase
+      // detectada (rotación + cast-count + cooldown snapshot), no una lista
+      // fija de DK — así el log sirve para cualquier clase soportada.
+      const suspectNames = [
+        ...rotationCfg.rotationNames,
+        ...rotationCfg.castCountSpells,
+        ...(rotationCfg.cooldownSnapshot ? [rotationCfg.cooldownSnapshot.summonSpellName] : []),
+        'Combustion', // debug puntual: reportado que no aparece en Buffs para Mago
+      ];
+      // Para el sample completo: "1" (Melee, universal) + los IDs reales que
+      // matcheen esos nombres de interés + el primer ID que haya en la data
+      // + los 5 hechizos con más eventos totales (así aparecen solos los que
+      // más casteás aunque no estén en la lista de rotación, ej. Shadow Bolt).
+      const idsByName = {};
+      Object.keys(dataObj).forEach((id) => {
+        const name = spellsObj[id] && spellsObj[id].name;
+        if (name) idsByName[name] = id;
+      });
+      const topByEvents = Object.keys(dataObj)
+        .filter((id) => Array.isArray(dataObj[id]))
+        .sort((a, b) => dataObj[b].length - dataObj[a].length)
+        .slice(0, 5);
+      const sampleIds = ['1', ...suspectNames.map((n) => idsByName[n]).filter(Boolean), ...topByEvents, Object.keys(dataObj)[0]]
+        .filter((id, i, arr) => id && arr.indexOf(id) === i);
+      const sample = {
+        FLAGS: raw.FLAGS,
+        RDURATION: raw.RDURATION,
+        NAME: raw.NAME,
+        CLASS: raw.CLASS,
+        spells: {},
+      };
+      sampleIds.forEach((id) => {
+        sample.spells[id] = {
+          info: spellsObj[id],
+          first_12_events: Array.isArray(dataObj[id]) ? dataObj[id].slice(0, 12) : dataObj[id],
+          total_events: Array.isArray(dataObj[id]) ? dataObj[id].length : null,
+        };
+      });
+      console.log('Rotation analysis — copy this ENTIRE block of text:\n' + JSON.stringify(sample, null, 2));
+
+      // Diagnóstico puntual: ¿los eventos de las habilidades de rotación de
+      // esta clase vienen realmente con source === tu nombre (raw.NAME), o
+      // hay otros nombres de source mezclados ahí (indicaría que el
+      // endpoint no filtra por jugador y el self-check está fallando)?
+      const suspectDebug = {};
+      const selfName = raw.NAME;
+      Object.keys(dataObj).forEach((id) => {
+        const spellName = (spellsObj[id] && spellsObj[id].name) || null;
+        if (!spellName || !suspectNames.includes(spellName)) return;
+        const events = Array.isArray(dataObj[id]) ? dataObj[id] : [];
+        const sourceCounts = {};
+        events.forEach((ev) => {
+          const src = ev[2];
+          sourceCounts[src] = (sourceCounts[src] || 0) + 1;
+        });
+        // Casteos REALMENTE tuyos (source Y ordenados), con el gap contra
+        // el casteo anterior — si algún gap da bien por debajo del cooldown
+        // real del hechizo, ahí sí hay algo duplicándose.
+        const selfCastTimesMs = events
+          .filter((ev) => ev[1] === 'SPELL_CAST_SUCCESS' && ev[2] === selfName)
+          .map((ev) => ev[0])
+          .sort((a, b) => a - b);
+        const selfCastsWithGap = selfCastTimesMs.map((ms, i) => ({
+          time: formatTimelineMs(ms),
+          ms,
+          gap_since_previous_sec: i === 0 ? null : ((ms - selfCastTimesMs[i - 1]) / 1000).toFixed(1),
+        }));
+        suspectDebug[spellName] = {
+          spellId: id,
+          selfName: raw.NAME,
+          total_events: events.length,
+          events_by_source: sourceCounts, // si hay más de una key acá, hay contaminación de otros jugadores/pets
+          castSuccessEvents: events.filter((ev) => ev[1] === 'SPELL_CAST_SUCCESS').length,
+          self_cast_count: selfCastTimesMs.length,
+          self_casts_with_gap: selfCastsWithGap, // acá se ve si algún gap viola el cooldown
+          first_10_events: events.slice(0, 10),
+        };
+      });
+      console.log('Rotation analysis — rotation spell diagnostics (Ghoul Frenzy/Horn of Winter/Death and Decay for DK, Corruption/Immolate/etc for Warlock):\n' + JSON.stringify(suspectDebug, null, 2));
+
+      // Diagnóstico de huecos grandes en el Timeline: para cada hueco >5s
+      // entre dos casteos consecutivos (SPELL_CAST_SUCCESS), listamos TODOS
+      // los eventos propios (cualquier flag, no solo CAST_SUCCESS) que
+      // pasaron en el medio — así vemos si hay canalizados (SPELL_CAST_START
+      // sin CAST_SUCCESS hasta que termina), Life Tap, o algo que el
+      // Timeline no está contando como "casteo".
+      {
+        const selfName2 = raw.NAME;
+        const allSelfEvents = [];
+        Object.keys(dataObj).forEach((id) => {
+          const name = (spellsObj[id] && spellsObj[id].name) || `Spell #${id}`;
+          (dataObj[id] || []).forEach((ev) => {
+            if (ev[2] === selfName2) allSelfEvents.push({ ms: ev[0], flag: ev[1], name, target: ev[3], raw: ev });
+          });
+        });
+        allSelfEvents.sort((a, b) => a.ms - b.ms);
+        const castSuccesses = allSelfEvents.filter((e) => e.flag === 'SPELL_CAST_SUCCESS');
+        const bigGaps = [];
+        for (let i = 1; i < castSuccesses.length; i++) {
+          const gapMs = castSuccesses[i].ms - castSuccesses[i - 1].ms;
+          if (gapMs > 5000) {
+            bigGaps.push({
+              from: { time: formatTimelineMs(castSuccesses[i - 1].ms), name: castSuccesses[i - 1].name },
+              to: { time: formatTimelineMs(castSuccesses[i].ms), name: castSuccesses[i].name },
+              gap_sec: (gapMs / 1000).toFixed(2),
+              // TODO lo que pasó (cualquier flag) estrictamente entre esos dos casteos.
+              events_in_gap: allSelfEvents.filter((e) => e.ms > castSuccesses[i - 1].ms && e.ms < castSuccesses[i].ms)
+                .map((e) => ({ time: formatTimelineMs(e.ms), flag: e.flag, name: e.name, target: e.target })),
+            });
+          }
+        }
+        console.log(`Rotation analysis — big timeline gaps (>5s) for ${selfName2}, with everything that happened inside each gap:\n` + JSON.stringify(bigGaps, null, 2));
+      }
+
+      // Diagnóstico puntual: Combustion — el intervalo calculado, y qué
+      // casteos (de cualquier hechizo) cayeron cerca (para ver si hay algún
+      // cast tuyo DENTRO de esa ventana, o si de verdad no casteaste nada
+      // en esos segundos exactos).
+      if (result.debugIntervalsByName && result.debugIntervalsByName['Combustion']) {
+        const combustionIntervals = result.debugIntervalsByName['Combustion'];
+        const nearbyDebug = combustionIntervals.map(([s, e]) => ({
+          interval: [formatTimelineMs(s), formatTimelineMs(e)],
+          casts_in_window: (result.timeline || [])
+            .filter((t) => t.ms >= s - 2000 && t.ms <= e + 2000)
+            .map((t) => ({ time: formatTimelineMs(t.ms), name: t.name, buffs: t.buffs.map((b) => b.name) })),
+        }));
+        console.log('Rotation analysis — Combustion interval(s) vs nearby casts:\n' + JSON.stringify(nearbyDebug, null, 2));
+      } else {
+        console.log('Rotation analysis — Combustion: no se calculó ningún intervalo (no pasó el filtro self-sourced, o no hay APPLIED/REMOVED para este ID).');
+      }
+
+      if (result.parseError) {
+        body.innerHTML = `<div class="dk-analysis-panel"><div class="dk-analysis-error">Couldn't parse the site's response (unexpected format): ${result.parseError}. Check the browser console (F12 → Console tab) — the full response is there.</div></div>`;
+      } else {
+        const classIEntry = Object.entries(CLASS_MAP).find(([, c]) => c.name.toLowerCase().replace(/ /g, '-') === (result.raw.CLASS || '').toLowerCase());
+        const classI = classIEntry ? Number(classIEntry[0]) : null;
+        const className = classIEntry ? classIEntry[1].name : 'class';
+        const candidates = classI != null ? getCompareCandidates(classI, bossName, playerName || result.raw.NAME) : [];
+
+        const panelHtml = buildAnalysisPanelHtml(result, { playerName, bossName, dps, duration });
+
+        body.innerHTML = `
+          <div class="compare-toolbar">
+            <button type="button" class="secondary" id="openCompareBtn" ${candidates.length ? '' : 'disabled title="No other roster member of this class has data against this boss"'}>⇄ Compare with another ${className}${candidates.length ? ` (${candidates.length})` : ''}</button>
+            <div class="compare-picker" id="comparePicker" style="display:none;">
+              ${candidates.map((c) => `<button type="button" class="compare-pick-btn" data-name="${c.name.replace(/"/g, '&quot;')}">${c.name}</button>`).join('')}
+            </div>
+          </div>
+          ${panelHtml}`;
+
+        wireAnalysisTabs(body);
+
+        const openBtn = $('openCompareBtn');
+        const picker = $('comparePicker');
+        if (openBtn && picker) {
+          openBtn.addEventListener('click', () => {
+            picker.style.display = picker.style.display === 'none' ? '' : 'none';
+          });
+        }
+        if (picker) {
+          picker.querySelectorAll('.compare-pick-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              compareWithPlayerName = btn.dataset.name;
+              renderLogAnalysis();
+            });
+          });
+        }
+      }
+    } catch (err) {
+      body.innerHTML = `<div class="dk-analysis-panel"><div class="dk-analysis-error">Could not fetch the analysis: ${err.message}. Make sure you're running <code>proxy_server.py</code> (this isn't the public API, it needs the proxy).</div></div>`;
+    }
+  }
+
+  function initDkAnalysis() {
+    const backBtn = $('backFromAnalysisBtn');
+    if (backBtn) backBtn.addEventListener('click', hideLogAnalysis);
+
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.dk-analysis-btn');
+      if (!btn) return;
+      e.stopPropagation();
+
+      const wrap = btn.closest('.dk-analysis-cell-wrap');
+      if (!wrap) return;
+      const { reportId, bossName, playerName, dps, duration } = wrap.dataset;
+
+      showLogAnalysis({ reportId, bossName, playerName, dps, duration });
+    });
+  }
+
+  function initPlayerProfile() {
+    const backBtn = $('backFromProfileBtn');
+    if (backBtn) backBtn.addEventListener('click', hidePlayerProfile);
+
+    // Delegación de eventos: cualquier nombre de jugador clickeable, tanto en
+    // el Roster como en el ranking por boss, abre el mismo perfil.
+    document.addEventListener('click', (e) => {
+      const nameEl = e.target.closest('.member-name, .boss-player-name');
+      if (!nameEl) return;
+      e.stopPropagation();
+      const name = nameEl.textContent.trim();
+      if (name) showPlayerProfile(name);
+    });
+  }
+
+  function initViewTabs() {
+    const wrap = $('viewTabs');
+    if (!wrap) return;
+    wrap.querySelectorAll('.view-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        viewMode = btn.dataset.view;
+        profilePlayerName = null;
+        activeAnalysisData = null;
+        compareWithPlayerName = null;
+        $('playerSection').style.display = 'none';
+        $('analysisSection').style.display = 'none';
+        wrap.querySelectorAll('.view-tab').forEach((b) => b.classList.toggle('active', b === btn));
+        $('rosterSection').style.display = viewMode === 'roster' ? '' : 'none';
+        $('bossSection').style.display = viewMode === 'boss' ? '' : 'none';
+        render();
+      });
+    });
+  }
+
+  function initBossViewControls() {
+    const phaseSelect = $('bossPhaseFilterSelect');
+    if (phaseSelect) {
+      phaseSelect.addEventListener('change', () => {
+        bossPhaseFilter = phaseSelect.value;
+        bossRaidFilter = ''; // al cambiar de fase, reseteamos raid y scope
+        bossScope = '__ALL__';
+        renderBossView();
+      });
+    }
+    const raidSelect = $('bossRaidFilterSelect');
+    if (raidSelect) {
+      raidSelect.addEventListener('change', () => {
+        bossRaidFilter = raidSelect.value;
+        bossScope = '__ALL__'; // al cambiar de raid, volvemos a "raid completa" dentro de esa raid
+        renderBossView();
+      });
+    }
+    const scopeSelect = $('bossScopeSelect');
+    if (scopeSelect) {
+      scopeSelect.addEventListener('change', () => {
+        bossScope = scopeSelect.value;
+        renderBossView();
+      });
+    }
+  }
+
+  function downloadCsv() {
+    const server = config.server || $('serverInput').value.trim();
+    const rows = config.members.map((m) => {
+      const key = memberKey(server, m.name, m.spec);
+      return { ...m, entry: dataCache[key] || { status: 'idle' } };
+    });
+
+    const header = ['core', 'server', 'name', 'spec', 'role', 'class', 'overall_points', 'overall_rank', 'boss', 'points', 'rank_players', 'rank_raids', 'dps_max', 'fastest_kill_duration', 'raids', 'report_id'];
+    const lines = [header.join(',')];
+
+    rows.forEach((r) => {
+      if (r.entry.status !== 'done') return;
+      const d = r.entry.data;
+      const classInfo = CLASS_MAP[d.class_i] || { name: `Clase #${d.class_i}` };
+      const specValue = r.entry.detectedSpec || r.spec;
+      const specInfo = getSpecInfo(d.class_i, specValue);
+      const bosses = Object.entries(d.bosses || {}).filter(([, b]) => b && Object.keys(b).length > 0);
+      const core = r.core || DEFAULT_CORE;
+
+      if (!bosses.length) {
+        lines.push([core, server, r.name, specInfo.name, specInfo.role, classInfo.name, formatScore(d.overall_points), d.overall_rank ?? '', '', '', '', '', '', '', '', ''].map(csvEscape).join(','));
+        return;
+      }
+      bosses.forEach(([bossName, b]) => {
+        lines.push([
+          core, server, r.name, specInfo.name, specInfo.role, classInfo.name, formatScore(d.overall_points), d.overall_rank ?? '',
+          bossName, formatScore(b.points), b.rank_players ?? '', b.rank_raids ?? '', b.dps_max ?? '',
+          b.fastest_kill_duration ?? '', b.raids ?? '', b.report_id ?? '',
+        ].map(csvEscape).join(','));
+      });
+    });
+
+    if (lines.length === 1) {
+      alert('No data loaded yet to export. Add characters and wait for them to load.');
+      return;
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(config.guildName || 'guild').replace(/[^a-z0-9]/gi, '_')}_roster.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function csvEscape(value) {
+    const str = String(value);
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  }
+
+  function bulkAddMembers() {
+    const server = $('serverInput').value.trim();
+    if (!server) { alert('Enter the server before adding characters.'); return; }
+    const core = $('bulkCoreInput').value.trim() || DEFAULT_CORE;
+
+    const lines = $('bulkInput').value.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) { return; }
+
+    let added = 0;
+    let skippedDup = 0;
+    let invalid = 0;
+    const toFetch = [];
+    // Nombres ya en el roster (case-insensitive) + los que se van agregando
+    // en esta misma tanda, para no duplicar ni contra lo existente ni
+    // dentro del propio pegado.
+    const seenNames = new Set(config.members.map((m) => m.name.toLowerCase()));
+
+    lines.forEach((line) => {
+      const parts = line.split(/[,;\t]+|\s+/).map((p) => p.trim()).filter(Boolean);
+      const name = parts[0];
+      const specRaw = parts[1];
+      if (!name || (specRaw && !['1', '2', '3'].includes(specRaw))) {
+        invalid++;
+        return;
+      }
+      const spec = specRaw || AUTO_SPEC;
+      const nameKey = name.toLowerCase();
+      if (seenNames.has(nameKey)) {
+        skippedDup++;
+        return;
+      }
+      seenNames.add(nameKey);
+      config.members.push({ name, spec, core });
+      toFetch.push({ name, spec });
+      added++;
+    });
+
+    config.server = server;
+    saveConfig();
+    render();
+    $('bulkInput').value = '';
+    $('bulkResult').textContent = `Added to ${core}: ${added} · Duplicates skipped: ${skippedDup} · Invalid lines: ${invalid}`;
+
+    (async () => {
+      for (const m of toFetch) {
+        await fetchMember(server, m.name, m.spec);
+      }
+    })();
+  }
+
+  $('addBtn').addEventListener('click', addMember);
+  $('refreshBtn').addEventListener('click', refreshAll);
+  $('downloadBtn').addEventListener('click', downloadCsv);
+  $('bulkAddBtn').addEventListener('click', bulkAddMembers);
+  $('guildName').addEventListener('change', () => { config.guildName = $('guildName').value; saveConfig(); });
+  $('serverInput').addEventListener('change', () => { config.server = $('serverInput').value.trim(); saveConfig(); });
+  $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') addMember(); });
+
+  initClassFilter();
+  initAddClassSpec();
+  initRosterFilterControls();
+  initViewTabs();
+  initBossViewControls();
+  initPlayerProfile();
+  initDkAnalysis();
+  loadState();
+})();
