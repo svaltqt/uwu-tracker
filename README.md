@@ -168,6 +168,32 @@ Si en algún momento preferís abrirlo con `python3 -m http.server` en vez del p
 funcionar**: el dashboard va a mostrar "Error al traer datos" en todas las filas, porque ese
 servidor no tiene el endpoint `/api/character` que el proxy sí expone.
 
+### Ejecutable standalone (sin instalar Python)
+
+Para alguien que solo quiere *usar* el dashboard (revisar el roster de la guild, por ejemplo)
+sin instalar Python ni un IDE, hay un ejecutable único generado con PyInstaller a partir de
+`proxy_server.py` + `web/` (ver `uwu-tracker.spec`). Se abre haciendo doble click y listo —
+levanta el servidor local y abre el navegador solo.
+
+**Cómo se genera:** el workflow `.github/workflows/build.yml` compila un binario para Windows,
+macOS y Linux cada vez que se pushea un tag `vX.Y.Z` (`git tag v0.2.0 && git push --tags`), y
+los deja adjuntos en la página de Releases del repo. También se puede disparar a mano desde la
+pestaña **Actions → Build & Release → Run workflow** para probar un build sin tagear — en ese
+caso los binarios quedan como *artifacts* descargables del run, sin crear un Release.
+
+**Por qué un update nunca borra el roster guardado:** el ejecutable ("congelado") guarda
+`uwu_logs.db` y la caché *fuera* de sí mismo, en la carpeta de datos de usuario del SO
+(`%APPDATA%\uwu-tracker` en Windows, `~/Library/Application Support/uwu-tracker` en macOS,
+`~/.local/share/uwu-tracker` en Linux) — nunca al lado del `.exe`. Bajar una versión nueva y
+reemplazar el archivo viejo no toca esa carpeta. Esto ya está resuelto en `proxy_server.py`
+(sección `IS_FROZEN` / `_user_data_dir()`), no requiere nada extra al actualizar.
+
+**Advertencias de SO en la primera apertura:** como los binarios no están firmados
+(firmar cuesta una cuenta de desarrollador paga en ambos casos), Windows SmartScreen y macOS
+Gatekeeper van a avisar "editor desconocido" la primera vez. En Windows es "Más información →
+Ejecutar de todas formas"; en macOS, click derecho → Abrir (en vez de doble click) la primera
+vez. Es un aviso, no bloquea la ejecución.
+
 ## Próximos pasos posibles
 
 - Compartir el roster entre dispositivos (hoy vive solo en `localStorage` del navegador).

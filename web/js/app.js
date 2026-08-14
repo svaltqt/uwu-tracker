@@ -1,232 +1,19 @@
-(function () {
-  // Mapeo class_i -> clase. Solo class_i=0 (Death Knight) está confirmado en vivo;
-  // el resto se infiere asumiendo orden alfabético de las 10 clases de WotLK.
-  const CLASS_MAP = {
-    0: { name: 'Death Knight', color: '#C41F3B' },
-    1: { name: 'Druid', color: '#FF7D0A' },
-    2: { name: 'Hunter', color: '#ABD473' },
-    3: { name: 'Mage', color: '#69CCF0' },
-    4: { name: 'Paladin', color: '#F58CBA' },
-    5: { name: 'Priest', color: '#FFFFFF' },
-    6: { name: 'Rogue', color: '#FFF569' },
-    7: { name: 'Shaman', color: '#0070DE' },
-    8: { name: 'Warlock', color: '#9482C9' },
-    9: { name: 'Warrior', color: '#C79C6E' },
-  };
+import { CLASS_MAP, SPEC_MAP, SPEC_ICON, specIconHtml, getSpecInfo } from './data/classes.js';
+import {
+  RAID_BOSS_LIST, BOSS_RAID_MAP, ALIAS_TO_CANONICAL, findBossData, RAID_ORDER,
+  getRaidForBoss, getCanonicalBossNames, getAllCanonicalBossNames,
+  PHASE_ORDER, PHASE_BOSSES, getRaidsForPhase,
+} from './data/raids.js';
+import { CLASS_ROTATION_CONFIG, DEFAULT_ROTATION_CONFIG } from './data/rotation-config.js';
+import { isFrostDk, computeFrostAnalysis, MAX_POTIONS_EXPECTED } from './analysis/frost-dk.js';
+import {
+  formatScore, scoreColor, parseReportDate, formatReportDate, formatDuration,
+  formatTimelineMs, formatAbbreviated, rankingValueHtml, dpsValueHtml,
+  totalDamageValueHtml, EXTERNAL_BUFFS, parseAuras, getExternalsReceived,
+  externalsColumnHtml,
+} from './utils/format.js';
 
-  // Mapeo class_i + spec -> {name, role}. Igual que CLASS_MAP, solo class_i=0
-  // está confirmado en vivo; el resto asume el orden estándar de árboles de
-  // talentos de WotLK (1/2/3 tal como los muestra el cliente de WoW). Todas
-  // las specs de sanación pura se marcan "Healing"; el resto (incluidos
-  // tanks) queda como "Damage", porque así es como las cuenta un meter de dps.
-  const SPEC_MAP = {
-    0: { 1: { name: 'Blood', role: 'Damage' }, 2: { name: 'Frost', role: 'Damage' }, 3: { name: 'Unholy', role: 'Damage' } },
-    1: { 1: { name: 'Balance', role: 'Damage' }, 2: { name: 'Feral', role: 'Damage' }, 3: { name: 'Restoration', role: 'Healing' } },
-    2: { 1: { name: 'Beast Mastery', role: 'Damage' }, 2: { name: 'Marksmanship', role: 'Damage' }, 3: { name: 'Survival', role: 'Damage' } },
-    3: { 1: { name: 'Arcane', role: 'Damage' }, 2: { name: 'Fire', role: 'Damage' }, 3: { name: 'Frost', role: 'Damage' } },
-    4: { 1: { name: 'Holy', role: 'Healing' }, 2: { name: 'Protection', role: 'Damage' }, 3: { name: 'Retribution', role: 'Damage' } },
-    5: { 1: { name: 'Discipline', role: 'Healing' }, 2: { name: 'Holy', role: 'Healing' }, 3: { name: 'Shadow', role: 'Damage' } },
-    6: { 1: { name: 'Assassination', role: 'Damage' }, 2: { name: 'Combat', role: 'Damage' }, 3: { name: 'Subtlety', role: 'Damage' } },
-    7: { 1: { name: 'Elemental', role: 'Damage' }, 2: { name: 'Enhancement', role: 'Damage' }, 3: { name: 'Restoration', role: 'Healing' } },
-    8: { 1: { name: 'Affliction', role: 'Damage' }, 2: { name: 'Demonology', role: 'Damage' }, 3: { name: 'Destruction', role: 'Damage' } },
-    9: { 1: { name: 'Arms', role: 'Damage' }, 2: { name: 'Fury', role: 'Damage' }, 3: { name: 'Protection', role: 'Damage' } },
-  };
 
-  // Ícono de Wowhead del árbol de talentos por class_i + spec (mismo criterio
-  // que los íconos de hechizos del analizador: se linkean desde el CDN
-  // público de Wowhead, no se reproducen/hostean acá).
-  const SPEC_ICON = {
-    0: { 1: 'spell_deathknight_bloodpresence', 2: 'spell_deathknight_frostpresence', 3: 'spell_deathknight_unholypresence' },
-    1: { 1: 'spell_nature_starfall', 2: 'ability_druid_catform', 3: 'spell_nature_healingtouch' },
-    2: { 1: 'ability_hunter_bestialdiscipline', 2: 'ability_marksmanship', 3: 'ability_hunter_camouflage' },
-    3: { 1: 'spell_holy_magicalsentry', 2: 'spell_fire_firebolt02', 3: 'spell_frost_frostbolt02' },
-    4: { 1: 'spell_holy_holybolt', 2: 'spell_holy_devotionaura', 3: 'spell_holy_auraoflight' },
-    5: { 1: 'spell_holy_wordfortitude', 2: 'spell_holy_guardianspirit', 3: 'spell_shadow_shadowwordpain' },
-    6: { 1: 'ability_rogue_eviscerate', 2: 'ability_backstab', 3: 'ability_stealth' },
-    7: { 1: 'spell_nature_lightning', 2: 'spell_nature_lightningshield', 3: 'spell_nature_magicimmunity' },
-    8: { 1: 'spell_shadow_deathcoil', 2: 'spell_shadow_metamorphosis', 3: 'spell_shadow_rainoffire' },
-    9: { 1: 'ability_warrior_savageblow', 2: 'ability_warrior_innerrage', 3: 'ability_warrior_defensivestance' },
-  };
-  function specIconHtml(classI, specNum, size) {
-    const icon = SPEC_ICON[classI] && SPEC_ICON[classI][specNum];
-    if (!icon) return '';
-    const label = (SPEC_MAP[classI] && SPEC_MAP[classI][specNum] && SPEC_MAP[classI][specNum].name) || '';
-    return `<img class="spec-icon" src="https://wow.zamimg.com/images/wow/icons/medium/${icon}.jpg" alt="${label}" title="${label}" width="${size}" height="${size}">`;
-  }
-
-  // La API devuelve bosses de VARIAS raids mezclados en el mismo objeto
-  // `bosses` de un personaje (confirmado: "Northrend Beasts" -de Trial of the
-  // Crusader- y "Koralon the Flame Watcher" -de Vault of Archavon- aparecen
-  // juntos en la misma respuesta). Como el campo raid_id que devuelve la
-  // API no está documentado/confirmado en su formato real, agrupamos por
-  // nombre de boss contra esta tabla estática de los raids de WotLK. Un boss
-  // que no esté acá cae en "Other" instead of disappearing.
-  // Lista de raids/jefes de WotLK. `name` es el nombre CANÓNICO —el que
-  // confirmó el usuario que devuelve realmente el server, en inglés— y es lo
-  // que se muestra en los selects incluso sin ningún log cargado todavía.
-  // `aliases` son variantes (nombres en español, u otras) que también hacen
-  // match si el server llegara a devolver eso en cambio.
-  const RAID_BOSS_LIST = [
-    { raid: 'Naxxramas', bosses: [
-      { name: 'Patchwerk', aliases: ['Remendejo'] },
-      { name: 'Grobbulus' },
-      { name: 'Gluth' },
-      { name: 'Thaddius' },
-      { name: "Anub'Rekhan" },
-      { name: 'Grand Widow Faerlina', aliases: ['Gran Viuda Faerlina'] },
-      { name: 'Maexxna' },
-      { name: 'Instructor Razuvious' },
-      { name: 'Gothik the Harvester', aliases: ['Gothik el Cosechador'] },
-      { name: 'The Four Horsemen', aliases: ['Los Cuatro Jinetes'] },
-      { name: 'Noth the Plaguebringer', aliases: ['Noth el Pesteador'] },
-      { name: 'Heigan the Unclean', aliases: ['Heigan el Impuro'] },
-      { name: 'Loatheb' },
-      { name: 'Sapphiron' },
-      { name: "Kel'Thuzad" },
-    ] },
-    { raid: 'The Eye of Eternity', aliases: ['El Ojo de la Eternidad'], bosses: [{ name: 'Malygos' }] },
-    { raid: 'The Obsidian Sanctuary', aliases: ['Sagrario Obsidiana'], bosses: [{ name: 'Sartharion' }] },
-    { raid: 'Ulduar', bosses: [
-      { name: 'Flame Leviathan', aliases: ['Leviatán de Llamas'] },
-      { name: 'Ignis the Furnace Master', aliases: ['Ignis, el Maestro de la Caldera'] },
-      { name: 'Razorscale', aliases: ['Tachoscuro'] },
-      { name: 'XT-002 Deconstructor', aliases: ['Desarmador XA-002', 'Desarmador XT-002'] },
-      { name: 'The Iron Assembly', aliases: ['Asamblea de Hierro', 'Steelbreaker', 'Rompecielos', 'Runemaster Molgeim', 'Molgeim', 'Stormcaller Brundir', 'Brundir'] },
-      { name: 'Kologarn' },
-      { name: 'Auriaya' },
-      { name: 'Freya' },
-      { name: 'Hodir' },
-      { name: 'Mimiron' },
-      { name: 'Thorim' },
-      { name: 'General Vezax' },
-      { name: 'Yogg-Saron' },
-      { name: 'Algalon the Observer', aliases: ['Algalon el Observador'] },
-    ] },
-    { raid: 'Trial of the Crusader', aliases: ['Prueba del Cruzado'], bosses: [
-      { name: 'Northrend Beasts', aliases: ['The Beasts of Northrend', 'Las Bestias de Nortrend', 'Gormok', 'Acidmaw and Dreadscale', 'Ácido y Pavor', 'Icehowl', 'Aullaneve'] },
-      { name: 'Lord Jaraxxus' },
-      { name: 'Faction Champions', aliases: ['Campeones de la Facción'] },
-      { name: "Twin Val'kyr", aliases: ["Val'kyr Gemelas", 'Fjola Lightbane', 'Fjola', 'Eydis Darkbane', 'Eydis'] },
-      { name: "Anub'arak" },
-    ] },
-    { raid: "Onyxia's Lair", aliases: ['Guarida de Onyxia'], bosses: [{ name: 'Onyxia' }] },
-    { raid: 'Icecrown Citadel', aliases: ['Ciudadela de la Corona de Hielo'], bosses: [
-      { name: 'Lord Marrowgar', aliases: ['Lord Tuétano'] },
-      { name: 'Lady Deathwhisper', aliases: ['Lady Susurramuerte'] },
-      { name: 'Icecrown Gunship Battle', aliases: ['Batalla de los Cañoneros'] },
-      { name: 'Deathbringer Saurfang', aliases: ['Libramorte Saurfang'] },
-      { name: 'Rotface', aliases: ['Panzachancro'] },
-      { name: 'Festergut', aliases: ['Carapútrea'] },
-      { name: 'Professor Putricide', aliases: ['Profesor Putricida'] },
-      { name: 'Blood Prince Council', aliases: ['Consejo de los Príncipes de la Sangre'] },
-      { name: "Blood-Queen Lana'thel", aliases: ['Reina de la Sangre Lana\'thel'] },
-      { name: 'Valithria Dreamwalker', aliases: ['Valithria Caminasueños'] },
-      { name: 'Sindragosa' },
-      { name: 'The Lich King', aliases: ['El Rey Exánime'] },
-    ] },
-    { raid: 'The Ruby Sanctuary', aliases: ['Sagrario Rubí'], bosses: [{ name: 'Halion' }] },
-    { raid: 'Vault of Archavon', aliases: ['La Cámara de Archavon'], bosses: [
-      { name: 'Archavon the Stone Watcher', aliases: ['Archavon el Vigía de Piedra'] },
-      { name: 'Emalon the Storm Watcher', aliases: ['Emalon el Vigía de la Tormenta'] },
-      { name: 'Koralon the Flame Watcher', aliases: ['Koralon el Vigía de la Llama'] },
-      { name: 'Toravon the Ice Watcher', aliases: ['Toravon el Vigía del Hielo'] },
-    ] },
-  ];
-
-  const BOSS_RAID_MAP = {};
-  // Mapa inverso: cualquier nombre (alias o sub-boss) → nombre canónico.
-  // Sirve para normalizar los keys que devuelve la API (ej. "Northrend Beasts")
-  // al nombre canónico que usa la UI ("The Beasts of Northrend").
-  const ALIAS_TO_CANONICAL = {};
-  RAID_BOSS_LIST.forEach(({ raid, bosses }) => {
-    bosses.forEach(({ name, aliases }) => {
-      BOSS_RAID_MAP[name] = raid;
-      ALIAS_TO_CANONICAL[name] = name; // el canónico se mapea a sí mismo
-      (aliases || []).forEach((alias) => {
-        BOSS_RAID_MAP[alias] = raid;
-        ALIAS_TO_CANONICAL[alias] = name;
-      });
-    });
-  });
-
-  // Busca la data de un boss en el objeto `bosses` de la respuesta de la API,
-  // probando primero el nombre canónico y luego todos sus aliases conocidos.
-  // La API puede devolver el boss bajo cualquier variante (ej. "Northrend Beasts"
-  // en vez de "The Beasts of Northrend"), así que hay que probar todas.
-  function findBossData(bosses, canonicalName) {
-    if (!bosses) return null;
-    // Intento directo con el nombre canónico
-    if (bosses[canonicalName] && Object.keys(bosses[canonicalName]).length) return bosses[canonicalName];
-    // Buscar bajo cualquier alias conocido de este boss
-    const entry = RAID_BOSS_LIST.flatMap((r) => r.bosses).find((b) => b.name === canonicalName);
-    if (entry && entry.aliases) {
-      for (const alias of entry.aliases) {
-        if (bosses[alias] && Object.keys(bosses[alias]).length) return bosses[alias];
-      }
-    }
-    return null;
-  }
-
-  // Orden de progresión para el selector de Raid (no alfabético) — el mismo
-  // orden en que las pasó el usuario.
-  const RAID_ORDER = [...RAID_BOSS_LIST.map((r) => r.raid), 'Other'];
-
-  function getRaidForBoss(bossName) {
-    return BOSS_RAID_MAP[bossName] || 'Other';
-  }
-
-  // Nombres canónicos de los jefes de una raid conocida, tal como hay que
-  // mostrarlos aunque todavía no exista ningún log cargado para ella.
-  function getCanonicalBossNames(raid) {
-    const entry = RAID_BOSS_LIST.find((r) => r.raid === raid);
-    return entry ? entry.bosses.map((b) => b.name) : [];
-  }
-
-  function getAllCanonicalBossNames() {
-    return RAID_BOSS_LIST.flatMap((r) => r.bosses.map((b) => b.name));
-  }
-
-  // Fases de contenido de WotLK (4.5 en total). Vault of Archavon es
-  // "evergreen" y va sumando un jefe nuevo por fase en vez de abrir de una,
-  // así que ahí filtramos boss por boss en vez de por raid entera.
-  const PHASE_ORDER = ['Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 4.5'];
-
-  const PHASE_BOSSES = {
-    'Phase 1': [
-      ...getCanonicalBossNames('Naxxramas'),
-      'Onyxia', 'Malygos', 'Sartharion',
-      'Archavon the Stone Watcher',
-    ],
-    'Phase 2': [
-      ...getCanonicalBossNames('Ulduar'),
-      'Emalon the Storm Watcher',
-    ],
-    'Phase 3': [
-      ...getCanonicalBossNames('Trial of the Crusader'),
-      'Koralon the Flame Watcher',
-    ],
-    'Phase 4': [
-      ...getCanonicalBossNames('Icecrown Citadel'),
-      'Toravon the Ice Watcher',
-    ],
-    'Phase 4.5': [
-      'Halion',
-    ],
-  };
-
-  // Raids que tienen al menos un jefe en esa fase (para hacer coincidir el
-  // filtro de Fase con el de Raid, como pidió el usuario).
-  function getRaidsForPhase(phase) {
-    const bosses = PHASE_BOSSES[phase] || [];
-    const raids = new Set(bosses.map(getRaidForBoss).filter((r) => r !== 'Other'));
-    return RAID_ORDER.filter((r) => raids.has(r));
-  }
-
-  function getSpecInfo(classI, spec) {
-    const bySpec = SPEC_MAP[classI];
-    const info = bySpec && bySpec[Number(spec)];
-    return info || { name: spec ? `Spec ${spec}` : '?', role: 'Damage' };
-  }
 
   const CONFIG_KEY = 'groster-config';
   const DATA_KEY = 'groster-data';
@@ -292,23 +79,6 @@
     return Array.from(cores).sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
   }
 
-  // La API devuelve el puntaje en escala 0-10000 (percentil × 100, ej. 9459 = 94.59).
-  function formatScore(rawPoints) {
-    if (rawPoints == null) return '–';
-    return (rawPoints / 100).toFixed(2);
-  }
-
-  function scoreColor(rawPoints) {
-    if (rawPoints == null) return 'var(--text-dim)';
-    const pct = rawPoints / 100;
-    if (pct >= 100) return '#F4C35A';   // amarillo claro / dorado (confirmado)
-    if (pct >= 95) return '#F39A2D';    // naranja intenso (confirmado)
-    if (pct >= 90) return '#F05A28';    // naranja rojizo (confirmado)
-    if (pct >= 75) return '#a335ee';    // morado
-    if (pct >= 50) return '#0070de';    // azul
-    if (pct >= 25) return '#1eff00';    // verde
-    return '#808080';                    // gris
-  }
 
   async function loadState() {
     try {
@@ -946,123 +716,6 @@
     return participants;
   }
 
-  // El report_id de uwu-logs.xyz sigue siempre el formato
-  // "YY-MM-DD--HH-MM--Autor--Servidor" (ej: "26-07-10--20-03--Deathtopia--Onyxia"),
-  // así que la fecha de publicación del log sale de ahí — no es un campo aparte
-  // en la respuesta de /character. Mismo parseo que LogEntry.from_report_id en
-  // el lado Python (models.py), reimplementado acá porque el dashboard es standalone.
-  function parseReportDate(reportId) {
-    if (!reportId) return null;
-    const parts = reportId.split('--');
-    if (parts.length < 2) return null;
-    const dateBits = parts[0].split('-').map(Number);
-    const timeBits = parts[1].split('-').map(Number);
-    if (dateBits.length !== 3 || timeBits.length !== 2) return null;
-    const [yy, mm, dd] = dateBits;
-    const [hh, mi] = timeBits;
-    if ([yy, mm, dd, hh, mi].some((n) => Number.isNaN(n))) return null;
-    const date = new Date(2000 + yy, mm - 1, dd, hh, mi);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  function formatReportDate(reportId) {
-    const d = parseReportDate(reportId);
-    if (!d) return '–';
-    return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
-  }
-
-  function formatDuration(seconds) {
-    if (seconds == null || Number.isNaN(seconds)) return '–';
-    const total = Math.round(seconds);
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
-  }
-
-  // "1:23.4" — para el timeline de casteos, con un decimal de precisión.
-  function formatTimelineMs(ms) {
-    const sign = ms < 0 ? '-' : '';
-    // Redondeamos primero a décimas de segundo enteras, así el carry a
-    // minuto se calcula sobre el valor YA redondeado (si no, un caso como
-    // 119960ms da "1:60.0" en vez de "2:00.0" — 60.0 no es un segundo válido).
-    const totalDeciSec = Math.round(Math.abs(ms) / 100);
-    const m = Math.floor(totalDeciSec / 600);
-    const s = (totalDeciSec - m * 600) / 10;
-    return `${sign}${m}:${s.toFixed(1).padStart(4, '0')}`;
-  }
-
-  // "1.2m", "850k", etc. — formato abreviado tipo Warcraft Logs para números grandes.
-  function formatAbbreviated(n) {
-    if (n == null || Number.isNaN(n)) return '–';
-    const abs = Math.abs(n);
-    if (abs >= 1e9) return `${(n / 1e9).toFixed(1).replace(/\.0$/, '')}b`;
-    if (abs >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, '')}m`;
-    if (abs >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, '')}k`;
-    return Math.round(n).toLocaleString('en-US');
-  }
-
-  function rankingValueHtml(bossData) {
-    const pts = bossData.points;
-    return `<div class="metric-value ranking-col" style="color:${scoreColor(pts)}">${formatScore(pts)}</div>`;
-  }
-
-  function dpsValueHtml(bossData) {
-    const dps = bossData.dps_max;
-    const dpsText = dps != null ? Math.round(dps).toLocaleString('en-US') : '–';
-    return `<div class="metric-value damage">${dpsText}</div>`;
-  }
-
-  function totalDamageValueHtml(bossData) {
-    const dps = bossData.dps_max;
-    const duration = bossData.fastest_kill_duration;
-    // La API no devuelve el daño total hecho, solo el DPS y la duración del
-    // kill — lo estimamos multiplicando ambos (asume que dps_max y
-    // fastest_kill_duration son del mismo intento, que es como los agrupa
-    // la API en cada boss).
-    const totalDamage = (dps != null && duration != null) ? dps * duration : null;
-    if (totalDamage == null) return '<div class="metric-value-secondary">–</div>';
-    return `<div class="metric-value-secondary" title="Estimated total damage (DPS × kill duration), the API doesn't give it directly">${formatAbbreviated(totalDamage)}</div>`;
-  }
-
-  // Externos conocidos que le pueden dar a un DPS (spell ID → nombre).
-  // Sacados de decodificar el campo `auras` de un log real contra Wowhead —
-  // no hay documentación oficial de este campo, así que esto es best-effort:
-  // si la API no incluye el spell ID exacto acá, no lo vamos a detectar.
-  const EXTERNAL_BUFFS = {
-    10060: 'Power Infusion',
-    29166: 'Innervate',
-    49016: 'Hysteria',
-    57933: 'Tricks of the Trade',
-    57934: 'Tricks of the Trade',
-    54648: 'Focus Magic',
-  };
-
-  // El campo `auras` viene como "#<spellId>/<veces>/<%uptime>/<flag>" repetido.
-  function parseAuras(aurasStr) {
-    if (!aurasStr) return [];
-    return aurasStr.split('#').filter(Boolean).map((chunk) => {
-      const [id, count, value, flag] = chunk.split('/');
-      return { id: Number(id), count: Number(count), value: Number(value), flag: Number(flag) };
-    });
-  }
-
-  // Externos reconocidos que recibió el jugador en este intento puntual
-  // (uno por tipo, aunque haya venido más de una vez).
-  function getExternalsReceived(bossData) {
-    const found = [];
-    parseAuras(bossData.auras).forEach((a) => {
-      const name = EXTERNAL_BUFFS[a.id];
-      if (name && !found.some((f) => f.name === name)) found.push({ name, count: a.count });
-    });
-    return found;
-  }
-
-  function externalsColumnHtml(bossData) {
-    const externals = getExternalsReceived(bossData);
-    if (!externals.length) return '<div class="externals-count">–</div>';
-    const tooltip = externals.map((e) => (e.count > 1 ? `${e.name} (x${e.count})` : e.name)).join(', ');
-    return `<div class="externals-count" title="${tooltip}">${externals.length}</div>`;
-  }
 
   // ── Análisis de rotación DK (experimental) ──────────────────────────────
   // Todo esto pega contra rutas de uwu-logs.xyz que NO son la API pública
@@ -1173,159 +826,6 @@
   }
 
   // Config de análisis por clase (raw.CLASS, ej. "death-knight", "warlock").
-  // Cada clase define: qué DoTs/debuffs propios van en "Rotation" (en vez de
-  // "Misc"), qué se excluye de la columna Buffs del timeline (para no
-  // duplicar lo que ya se ve en Rotation), qué casteos interesa contar en
-  // vez de uptime-ar, y opcionalmente un "cooldown snapshot" (como Gárgola
-  // para DK) si la clase tiene un cooldown icónico con buffs de
-  // fuerza/haste relevantes en el momento exacto de usarlo.
-  const CLASS_ROTATION_CONFIG = {
-    'death-knight': {
-      rotationNames: ['Desolation', 'Ghoul Frenzy', 'Bone Shield', 'Unholy Blight', 'Blood Plague', 'Frost Fever', 'Death and Decay'],
-      timelineBuffExclude: ['Blood Tap', 'Death and Decay', 'Ebon Plague', 'Blood Plague', 'Frost Fever'],
-      castCountSpells: ['Horn of Winter'],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: {
-        sectionTitle: 'Gargoyle & Haste Snapshots',
-        summonSpellName: 'Summon Gargoyle',
-        uptimeNames: ['Summon Gargoyle', 'Paragon', 'Greatness'],
-        snapshotCheckNames: ['Unholy Presence', 'Hyperspeed Accelerators', 'Speed Potion', 'Berserking'],
-        followUpSpellName: 'Blood Presence',
-        followUpLabel: 'switched to Blood Presence',
-        note: 'Gargoyle-specific damage: not calculated yet. The exact definition of what counts as a "snapshot" is still being fine-tuned.',
-      },
-    },
-    // Afflicton/Demonology/Destruction comparten estos DoTs/curses en mayor o
-    // menor medida — los que no uses simplemente no van a aparecer en tus
-    // datos (spellIds solo trae lo que realmente casteaste). No hay un
-    // cooldown único equivalente a la Gárgola entre las 3 specs, así que esa
-    // sección queda afuera para Warlock.
-    warlock: {
-      rotationNames: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
-      timelineBuffExclude: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Mago no tiene DoTs "clásicos" como DK/Warlock — la mayoría de su daño
-    // es directo (Fireball, Frostbolt, Arcane Blast). Lo poco que sí deja un
-    // debuff con inicio/fin propio en el target va acá; el resto de la
-    // rotación (nukes directos) se ve igual en el Timeline, solo que no
-    // tiene una barra de "uptime" porque no aplica. Tampoco hay un cooldown
-    // único equivalente a la Gárgola entre Fuego/Escarcha/Arcano (Combustion,
-    // Icy Veins, Arcane Power son cosas distintas), así que esa sección
-    // queda afuera para Mago también.
-    mage: {
-      rotationNames: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
-      timelineBuffExclude: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Warrior deja sobre el objetivo,
-    // compartidos en mayor o menor medida entre Armas/Furia/Protección:
-    // Rend (sangrado), Deep Wounds (proc de sangrado por crítico, pasivo de
-    // Armas), Thunder Clap (reduce velocidad de ataque), Demoralizing Shout
-    // (reduce daño físico) y Sunder Armor (stackea reducción de armadura,
-    // clave para tanks). Como con Mago/Warlock, no hay un cooldown único
-    // equivalente a la Gárgola entre las 3 specs (Bladestorm es solo de
-    // Armas), así que esa sección queda afuera.
-    warrior: {
-      rotationNames: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
-      timelineBuffExclude: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Rogue deja sobre el objetivo, y
-    // Slice and Dice (buff propio, clave del ritmo de combo points), compartidos
-    // en mayor o menor medida entre Asesinato/Combate/Sutileza: Rupture y
-    // Garrote (sangrados), Deadly Poison (veneno que stackea), Expose Armor
-    // (reduce armadura) y Hunger for Blood (buff de Combate que requiere un
-    // sangrado activo en el target para poder refrescarse). Como con
-    // Mago/Warlock/Warrior, no hay un cooldown único equivalente a la
-    // Gárgola entre las 3 specs (Cold Blood es de Asesinato, Adrenaline Rush
-    // de Combate, Shadowstep de Sutileza), así que esa sección queda afuera.
-    rogue: {
-      rotationNames: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
-      timelineBuffExclude: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Hunter deja sobre el objetivo,
-    // más Rapid Fire y Bestial Wrath (cooldowns propios que son parte
-    // central del rotation, aunque no sean DoTs), compartidos en mayor o
-    // menor medida entre Beast Mastery/Marksmanship/Survival: Serpent Sting
-    // (DoT base), Black Arrow (DoT de Survival), Hunter's Mark (debuff de
-    // largo duración) y Piercing Shots (sangrado por crítico, talento de
-    // Marksmanship). No hay un cooldown único equivalente a la Gárgola
-    // entre las 3 specs (Bestial Wrath es solo de Beast Mastery), así que
-    // esa sección queda afuera.
-    hunter: {
-      rotationNames: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
-      timelineBuffExclude: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Paladin deja sobre el objetivo, más
-    // Consecration (DoT en área bajo el jugador, igual criterio que Death and
-    // Decay para DK) y Avenging Wrath (cooldown propio compartido entre las
-    // 3 specs), compartidos en mayor o menor medida entre Retribución/Sagrado/
-    // Protección: Judgement of Wisdom, Judgement of Light y Judgement of
-    // Command son los 3 posibles resultados de Judgement — solo va a
-    // aparecer el que realmente uses, el resto simplemente no tiene datos.
-    // No hay un cooldown único equivalente a la Gárgola entre las 3 specs,
-    // así que esa sección queda afuera.
-    paladin: {
-      rotationNames: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
-      timelineBuffExclude: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Druid deja sobre el objetivo, más
-    // Savage Roar (buff propio, ritmo de combo points en Feral/Cat). Cubre
-    // Balance (Moonfire, Insect Swarm) y Feral (Rip, Rake, Mangle, Lacerate,
-    // Faerie Fire, Savage Roar) — solo van a aparecer datos en los que
-    // realmente uses según tu spec/gameplay. Restoration es healer y queda
-    // fuera del score de daño (ver limitación de HPS), pero el análisis de
-    // rotación no depende de eso. No hay un cooldown único equivalente a la
-    // Gárgola compartido entre Balance/Feral/Restoration, así que esa
-    // sección queda afuera.
-    druid: {
-      rotationNames: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
-      timelineBuffExclude: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Priest deja sobre el objetivo.
-    // Discipline y Holy son healers puros (fuera del score de daño por la
-    // limitación de HPS), así que esto en la práctica solo va a tener datos
-    // en Shadow: Shadow Word: Pain, Vampiric Touch y Devouring Plague son
-    // los 3 DoTs principales de esa spec. No hay cooldown único a snapshotear.
-    priest: {
-      rotationNames: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
-      timelineBuffExclude: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-    // Debuffs con inicio/fin propio que un Shaman deja sobre el objetivo:
-    // Flame Shock (DoT de Elemental) y Stormstrike / Frostbrand Attack
-    // (debuffs de Enhancement). Restoration es healer y queda fuera del
-    // score de daño. No hay cooldown único compartido entre las 3 specs.
-    shaman: {
-      rotationNames: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
-      timelineBuffExclude: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
-      castCountSpells: [],
-      macroSpamThreshold: 50,
-      cooldownSnapshot: null,
-    },
-  };
-  const DEFAULT_ROTATION_CONFIG = { rotationNames: [], timelineBuffExclude: [], castCountSpells: [], macroSpamThreshold: 50, cooldownSnapshot: null };
 
   function summarizeDkTimeline(raw) {
     const rotationCfg = CLASS_ROTATION_CONFIG[(raw.CLASS || '').toLowerCase()] || DEFAULT_ROTATION_CONFIG;
@@ -2052,6 +1552,7 @@
     const rotationUptimes = result.uptimes.filter((u) => u.category === 'rotation');
     const gargoyleUptimes = result.uptimes.filter((u) => u.category === 'gargoyle');
     const otherUptimes = result.uptimes.filter((u) => u.category === 'other');
+    const frost = isFrostDk(result) ? computeFrostAnalysis(result) : null;
 
     const INFO_ONLY_UPTIMES = new Set(['Bone Shield']);
     const EVAL_THRESHOLD = 90;
@@ -2078,24 +1579,63 @@
     const headerDuration = duration ? formatDuration(Number(duration)) : '–';
     const classInfo = Object.values(CLASS_MAP).find((c) => c.name.toLowerCase().replace(/ /g, '-') === (result.raw.CLASS || '').toLowerCase());
     const headerNameColor = (classInfo && classInfo.color) || '#e9e5dc';
+    const frostScoreColor = (s) => (s >= 90 ? '#F4C35A' : s >= 75 ? '#a335ee' : s >= 50 ? '#0070de' : '#e3b341');
+    const scoreRow = frost && frost.score != null
+      ? `<div class="dk-analysis-header-row"><span>Frost Score:</span><span class="dk-score-badge" style="color:${frostScoreColor(frost.score)}">${frost.score}/100</span></div>`
+      : '';
     const header = `
       <div class="dk-analysis-header">
         <div class="dk-analysis-header-row"><span>Player:</span><span style="color: ${headerNameColor}; font-weight: 600;">${headerPlayerName}</span></div>
         <div class="dk-analysis-header-row"><span>Encounter:</span><span class="dk-header-boss">${headerBossName}</span></div>
         <div class="dk-analysis-header-row"><span>DPS:</span><span>${headerDps}</span></div>
         <div class="dk-analysis-header-row"><span>Duration:</span><span>${headerDuration}</span></div>
-      </div>`;
+        ${scoreRow}
+      </div>
+      ${frost ? `<div class="dk-analysis-score-breakdown">${frost.categories.map((c) => `<span class="dk-score-chip">${c.label}: ${c.score.toFixed(0)}</span>`).join('')}<span class="dk-score-chip dk-score-chip-pending" title="El proxy/API no expone estado de Runic Power ni Runas por evento todavía">RP Capping: pending</span></div>` : ''}`;
 
-    const speedSection = result.gcdDelayMs != null
+    const kmRow = frost && frost.killingMachine
+      ? checkRow('Killing Machine procs used', `${frost.killingMachine.used} of ${frost.killingMachine.total}`, frost.killingMachine.used === frost.killingMachine.total)
+        + (frost.killingMachine.avgDelayMs != null ? infoRow('Avg. delay to spend Killing Machine', `${frost.killingMachine.avgDelayMs.toFixed(0)} ms`) : '')
+      : '';
+    const obliterateDriftRow = frost
+      ? infoRow('Obliterate rune drift', 'not tracked yet (needs rune state, not exposed by the API)')
+      : '';
+    const speedSection = (result.gcdDelayMs != null || kmRow)
       ? `<div class="dk-analysis-section-title">Speed</div>
          <div class="dk-analysis-spells">
-           ${infoRow('Avg. GCD delay (approx.)', `${result.gcdDelayMs.toFixed(0)} ms`)}
+           ${result.gcdDelayMs != null ? infoRow('Avg. GCD delay (approx.)', `${result.gcdDelayMs.toFixed(0)} ms`) : ''}
+           ${kmRow}
+           ${obliterateDriftRow}
          </div>`
       : '';
 
-    const rotationSection = (rotationUptimes.length || castNoteRows)
+    const uaRows = frost && frost.ua
+      ? infoRow('Unbreakable Armor used', `${frost.ua.uses} time${frost.ua.uses === 1 ? '' : 's'}`)
+        + frost.ua.windows.map((w) => checkRow(
+            `Unbreakable Armor #${w.index}${w.withErw ? ' (with ERW)' : ''} — Obliterate hits`,
+            `${w.obliterateHits} of ${w.target}`,
+            w.obliterateHits >= w.target,
+          )).join('')
+      : '';
+    const howlingBlastRow = frost && frost.howlingBlast
+      ? checkRow('Howling Blast casts with Rime active', `${frost.howlingBlast.goodCount} of ${frost.howlingBlast.total}`, frost.howlingBlast.goodCount === frost.howlingBlast.total)
+      : '';
+    const rimeRow = frost && frost.rime
+      ? checkRow('Rime procs used', `${frost.rime.used} of ${frost.rime.total}`, frost.rime.used === frost.rime.total)
+      : '';
+    const rpOvercapRow = frost
+      ? infoRow('Runic Power over-capping', 'not tracked yet (needs RP state, not exposed by the API)')
+      : '';
+    const rotationSection = (rotationUptimes.length || castNoteRows || uaRows || howlingBlastRow || rimeRow)
       ? `<div class="dk-analysis-section-title">Rotation</div>
-         <div class="dk-analysis-spells">${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}</div>`
+         <div class="dk-analysis-spells">
+           ${uaRows}
+           ${howlingBlastRow}
+           ${rpOvercapRow}
+           ${rimeRow}
+           ${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}
+         </div>
+         ${frost && frost.howlingBlast && frost.howlingBlast.goodCount !== frost.howlingBlast.total ? '<div class="dk-analysis-note">Howling Blast without Rime is only worth casting on 3+ targets — this check can only confirm Rime uptime, not how many targets a given cast hit.</div>' : ''}`
       : '';
 
     const snapMeta = result.gargoyleMeta;
@@ -2112,9 +1652,15 @@
          <div class="dk-analysis-note">${snapMeta.note}</div>`
       : '';
 
-    const miscSection = otherUptimes.length
+    const consumableRows = frost && frost.consumables
+      ? checkRow('Flask of Endless Rage', frost.consumables.flaskUsed ? 'yes' : 'no', frost.consumables.flaskUsed)
+        + checkRow('Potions used (Speed / Indestructible)', `${frost.consumables.potionUses.length} of ${MAX_POTIONS_EXPECTED}`, frost.consumables.potionUses.length >= MAX_POTIONS_EXPECTED)
+        + (frost.consumables.prepotOk != null ? checkRow('First potion was a pre-pot (≤60s before pull)', frost.consumables.prepotOk ? 'yes' : 'no', frost.consumables.prepotOk) : '')
+      : '';
+    const miscSection = (otherUptimes.length || consumableRows)
       ? `<div class="dk-analysis-section-title">Miscellaneous</div>
-         <div class="dk-analysis-spells">${otherUptimes.map(uptimeRow).join('')}</div>`
+         <div class="dk-analysis-spells">${consumableRows}${otherUptimes.map(uptimeRow).join('')}</div>
+         ${frost && frost.consumables && !frost.consumables.flaskUsed ? '<div class="dk-analysis-note">A flask cast well before the pre-pull capture window (15s) won\'t show an apply event — "no" can mean "not detected", not necessarily "not used".</div>' : ''}`
       : '';
 
     const nothingFound = !rotationUptimes.length && !otherUptimes.length && !result.gargoyle && !castNoteRows
@@ -2137,7 +1683,7 @@
           ${result.spellCounts.slice(0, 15).map((s) => `<div class="dk-analysis-spell-row"><span>${s.name}</span><span>${s.count}</span></div>`).join('')}
         </div>
       </details>
-      ${isDkClass ? '<div class="dk-analysis-note">Rune drift and wasted runic power are not calculated yet.</div>' : ''}`;
+      ${isDkClass && !frost ? '<div class="dk-analysis-note">Rune drift and wasted runic power are not calculated yet.</div>' : ''}`;
 
     // Ícono de wowhead a partir del nombre del ícono crudo (ej. "inv_sword_04").
     const iconImgHtml = (icon, name, size) => icon
@@ -2649,4 +2195,3 @@
   initPlayerProfile();
   initDkAnalysis();
   loadState();
-})();

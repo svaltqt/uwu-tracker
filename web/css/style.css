@@ -661,6 +661,24 @@
   }
   .groster .dk-analysis-header-row { display: flex; justify-content: space-between; gap: 12px; padding: 1px 0; color: var(--text-dim); }
   .groster .dk-header-boss { color: var(--teal); }
+  .groster .dk-score-badge { font-weight: 700; font-size: 13px; }
+  .groster .dk-analysis-score-breakdown {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 320px;
+    margin-bottom: 10px;
+  }
+  .groster .dk-score-chip {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+  }
+  .groster .dk-score-chip-pending { font-style: italic; opacity: 0.75; }
 
   .groster .dk-row {
     display: flex;
