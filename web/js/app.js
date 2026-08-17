@@ -6,6 +6,7 @@ import {
 } from './data/raids.js';
 import { CLASS_ROTATION_CONFIG, DEFAULT_ROTATION_CONFIG } from './data/rotation-config.js';
 import { isFrostDk, computeFrostAnalysis, MAX_POTIONS_EXPECTED } from './analysis/frost-dk.js';
+import { isUnholyDk, computeUnholyAnalysis } from './analysis/unholy-dk.js';
 import {
   formatScore, scoreColor, parseReportDate, formatReportDate, formatDuration,
   formatTimelineMs, formatAbbreviated, rankingValueHtml, dpsValueHtml,
@@ -115,7 +116,10 @@ import {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server, name, spec_i: String(spec) }),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('character', resp.status, detail));
+    }
     return resp.json();
   }
 
@@ -731,12 +735,31 @@ import {
 
   const dkAnalysisCache = {}; // key: `${reportId}::${bossHtml}::${playerName}` -> resultado o error
 
+  // uwu-logs.xyz devuelve esta página de HTML (no JSON) cuando el sitio
+  // está caído/reiniciando, con status 4xx/5xx igual — así que llega acá
+  // como si fuera un error de datos cuando en realidad es "reintentá en
+  // un rato". La detectamos por un texto fijo de esa página para mostrar
+  // un mensaje claro en vez de HTML crudo.
+  function friendlyUpstreamError(routeName, status, detailText) {
+    if (/Server is restarting or under maintenance/i.test(detailText || '')) {
+      return `uwu-logs.xyz está en mantenimiento ahora mismo — probá de nuevo en unos minutos.`;
+    }
+    const unitNotFound = (detailText || '').match(/unit with name \[([^\]]*)\] wasn't found/i);
+    if (unitNotFound) {
+      return `uwu-logs.xyz no encontró a "${unitNotFound[1]}" en ese reporte — el nombre en el log distingue mayúsculas/minúsculas. Revisá que el nombre esté escrito EXACTO como en el juego en el roster (ej. "Yongiill", no "yongiill") y volvé a agregarlo si hace falta.`;
+    }
+    return `${routeName} HTTP ${status}${detailText ? ` — ${detailText.slice(0, 200)}` : ''}`;
+  }
+
   // Trae la página HTML del reporte y parsea los <a class="kill-link"> —
   // ahí (y SOLO ahí) está la dificultad real (10N/10H/25N/25H) y los
   // índices s/f de cada intento. El JSON de report_segments no los trae.
   async function fetchKillLinksFromReportPage(reportId) {
     const resp = await fetch(`/api/report_page/${reportId}`);
-    if (!resp.ok) throw new Error(`report_page HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_page', resp.status, detail));
+    }
     const html = await resp.text();
     const links = [];
     // Matcheamos el tag <a ...> completo primero (sin asumir orden de
@@ -799,7 +822,10 @@ import {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ boss: bossHtml }),
     });
-    if (!resp.ok) throw new Error(`report_segments HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_segments', resp.status, detail));
+    }
     const segments = await resp.json();
     if (!Array.isArray(segments) || !segments.length) throw new Error('No attempts recorded for this boss in the report');
     const killIndex = segments.findIndex((s) => /kill/i.test(s));
@@ -821,8 +847,132 @@ import {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!resp.ok) throw new Error(`report_casts HTTP ${resp.status}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_casts', resp.status, detail));
+    }
     return resp.json();
+  }
+
+  async function fetchPlayerDamagePage(reportId, bossHtml, attemptInfo, playerName) {
+    const info = typeof attemptInfo === 'object' && attemptInfo !== null ? attemptInfo : { attempt: attemptInfo };
+    const params = new URLSearchParams();
+    if (bossHtml != null) params.set('boss', bossHtml);
+    if (info.mode != null) params.set('mode', info.mode);
+    if (info.attempt != null) params.set('attempt', String(info.attempt));
+    if (info.s != null) params.set('s', String(info.s));
+    if (info.f != null) params.set('f', String(info.f));
+    const url = `/api/report_player_page/${encodeURIComponent(reportId)}/${encodeURIComponent(playerName)}?${params.toString()}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_player_page', resp.status, detail));
+    }
+    return resp.text();
+  }
+
+  function parseNumberCell(text) {
+    const digits = String(text || '').replace(/[^0-9-]/g, '');
+    return digits ? Number(digits) : 0;
+  }
+
+  // La página HTML de Damage sí agrega el daño hecho por las mascotas del
+  // jugador. Tomamos la columna Actual -> Amount y agrupamos las filas por
+  // el nombre de la pet que UwU Logs agrega entre paréntesis.
+  function parsePlayerPetDamageHtml(html, ghoulName) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const rows = Array.from(doc.querySelectorAll('#dmg-done-main > table > tbody > tr'));
+    if (!rows.length) throw new Error('Damage table not found in player page');
+
+    const spellRows = rows.map((row) => {
+      const cells = Array.from(row.querySelectorAll(':scope > td'));
+      const name = (cells[0] && cells[0].textContent || '').replace(/\s+/g, ' ').trim();
+      return {
+        name,
+        damage: parseNumberCell(cells[2] && cells[2].textContent),
+        casts: parseNumberCell(cells[5] && cells[5].textContent),
+        other: parseNumberCell(cells[6] && cells[6].textContent),
+        directTotal: parseNumberCell(cells[7] && cells[7].textContent),
+        directHits: parseNumberCell(cells[8] && cells[8].textContent),
+        directCrits: parseNumberCell(cells[10] && cells[10].textContent),
+      };
+    }).filter((r) => r.name);
+
+    const totalDamageCell = doc.querySelector('#dmg-done-main > table > tfoot > tr > td:nth-child(3)');
+    const playerTotalDamage = parseNumberCell(totalDamageCell && totalDamageCell.textContent);
+    const gargoyleRows = spellRows.filter((r) => /\(Ebon Gargoyle\)/i.test(r.name));
+    const armyRows = spellRows.filter((r) => /\(Army of the Dead Ghoul\)/i.test(r.name));
+    // Prefer the name discovered from Raise Dead, but UwU Logs also exposes
+    // the permanent ghoul directly in the Damage table as e.g. Melee (Ratgobbler).
+    // This fallback is important when Raise Dead happened before the encounter
+    // slice and therefore its summon event is absent from report_casts.
+    let detectedGhoulName = ghoulName || null;
+    if (!detectedGhoulName) {
+      const meleePetRow = spellRows.find((r) => {
+        const m = r.name.match(/^Melee\s*\(([^)]+)\)$/i);
+        if (!m) return false;
+        const pet = m[1].trim();
+        return !/^(Ebon Gargoyle|Army of the Dead Ghoul)$/i.test(pet);
+      });
+      if (meleePetRow) {
+        const m = meleePetRow.name.match(/^Melee\s*\(([^)]+)\)$/i);
+        detectedGhoulName = m ? m[1].trim() : null;
+      }
+    }
+    const escapedGhoul = detectedGhoulName ? detectedGhoulName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : null;
+    const ghoulRegex = escapedGhoul ? new RegExp(`\\(${escapedGhoul}\\)`, 'i') : null;
+    const ghoulRows = ghoulRegex ? spellRows.filter((r) => ghoulRegex.test(r.name)) : [];
+
+
+    const aggregate = (matchedRows) => ({
+      damage: matchedRows.reduce((sum, r) => sum + r.damage, 0),
+      casts: matchedRows.reduce((sum, r) => sum + r.casts, 0),
+      hits: matchedRows.reduce((sum, r) => sum + r.directTotal, 0),
+      rows: matchedRows,
+    });
+
+    const gargoyleUnitIds = Array.from(doc.querySelectorAll('#pets-dropdown a'))
+      .filter((a) => /Ebon Gargoyle/i.test(a.textContent || ''))
+      .map((a) => {
+        const m = (a.getAttribute('href') || '').match(/\/player\/([^/]+)\/?/);
+        return m ? decodeURIComponent(m[1]) : null;
+      })
+      .filter(Boolean);
+
+    return {
+      playerTotalDamage,
+      gargoyle: aggregate(gargoyleRows),
+      ghoul: aggregate(ghoulRows),
+      ghoulName: detectedGhoulName,
+      armyOfTheDead: aggregate(armyRows),
+      gargoyleUnitIds,
+    };
+  }
+
+  // Damage page de una entidad individual (por ejemplo un GUID de Ebon
+  // Gargoyle). Se usa para separar el daño de Gargoyle #1/#2/#3 cuando el
+  // encounter tiene más de una invocación.
+  function parseUnitDamageHtml(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const rows = Array.from(doc.querySelectorAll('#dmg-done-main > table > tbody > tr'));
+    const spellRows = rows.map((row) => {
+      const cells = Array.from(row.querySelectorAll(':scope > td'));
+      const name = (cells[0] && cells[0].textContent || '').replace(/\s+/g, ' ').trim();
+      return {
+        name,
+        damage: parseNumberCell(cells[2] && cells[2].textContent),
+        casts: parseNumberCell(cells[5] && cells[5].textContent),
+        hits: parseNumberCell(cells[7] && cells[7].textContent),
+      };
+    }).filter((r) => r.name);
+    const gargoyleStrikeRows = spellRows.filter((r) => /Gargoyle Strike/i.test(r.name));
+    const selected = gargoyleStrikeRows.length ? gargoyleStrikeRows : spellRows;
+    return {
+      damage: selected.reduce((sum, r) => sum + r.damage, 0),
+      casts: selected.reduce((sum, r) => sum + r.casts, 0),
+      hits: selected.reduce((sum, r) => sum + r.hits, 0),
+      rows: selected,
+    };
   }
 
   // Config de análisis por clase (raw.CLASS, ej. "death-knight", "warlock").
@@ -846,17 +996,20 @@ import {
         dataBySpell[id] = Array.isArray(events) ? events.filter((ev) => ev[0] >= -PREPULL_WINDOW_MS) : events;
       });
       const spellInfo = raw.SPELLS || raw.spells || {};
+      const displayNameForId = (id) => (spellInfo[id] && (spellInfo[id].name || spellInfo[id].NAME)) || `Spell #${id}`;
       const spellIds = Object.keys(dataBySpell);
       const fightMs = (raw.RDURATION || 0) * 1000;
       const selfName = raw.NAME;
       // Nombre -> ícono (ej. "inv_sword_04"), para mostrar el ícono real
       // de cada hechizo/buff en el timeline.
       const iconByName = {};
+      const iconById = {};
       spellIds.forEach((id) => {
         const info = spellInfo[id];
         const name = info && (info.name || info.NAME);
         const icon = info && (info.icon || info.ICON);
         if (name && icon && !iconByName[name]) iconByName[name] = icon;
+        if (icon && !iconById[id]) iconById[id] = icon;
       });
 
       summary.uniqueSpells = spellIds.length;
@@ -894,23 +1047,53 @@ import {
       // no, usamos el target no-vos con más tiempo activo total (el boss
       // real, no un add de paso).
       const intervalsByName = {}; // name -> [[start,end], ...]
+      const intervalsById = {}; // id (string) -> [[start,end], ...] — inmune al idioma del log
+      // Excepción puntual: Bloodlust/Heroism son cooldowns de grupo que
+      // valen la pena ver aunque los tire el Shaman, no vos — todo lo
+      // demás que te tiran otros jugadores (Bendición de Reyes,
+      // Fortaleza, Luminosidad Arcana, Don de lo Salvaje, auras de
+      // Paladín, etc.) se sigue excluyendo a propósito, igual que antes.
+      const RAID_COOLDOWN_WHITELIST_IDS = new Set(['2825', '32182']); // Bloodlust, Heroism
+      // Some personal procs (notably weapon runeforges) are represented by
+      // UwU Logs with a source that is not exactly the character name. They
+      // are still unambiguously personal when target === self. Do not discard
+      // them before building intervals.
+      const SELF_TARGET_PERSONAL_BUFF_IDS = new Set(['49222', '53365', '53760']); // Bone Shield, Unholy Strength, Flask of Endless Rage
       spellIds.forEach((id) => {
         const events = dataBySpell[id];
         if (!Array.isArray(events)) return;
-        const appliedEvents = events.filter((ev) => ev[1] === 'SPELL_AURA_APPLIED');
-        if (!appliedEvents.length) return;
-        const isSelfSourced = appliedEvents.every((ev) => ev[2] === selfName);
-        if (!isSelfSourced) return; // buff/debuff de otro jugador o del boss
+        // A proc can refresh while it is already active. Treat REFRESH as an
+        // activation signal too; this is particularly important for Unholy
+        // Strength (Fallen Crusader), which can re-proc before the 15s aura
+        // expires.
+        const auraEvents = events.filter((ev) => ['SPELL_AURA_APPLIED', 'SPELL_AURA_REFRESH', 'SPELL_AURA_REMOVED'].includes(ev[1]));
+        const appliedEvents = auraEvents.filter((ev) => ev[1] === 'SPELL_AURA_APPLIED' || ev[1] === 'SPELL_AURA_REFRESH');
+        const isBoneShield = String(id) === '49222';
+        // Bone Shield is commonly pre-cast before the pull. In that case the
+        // segment may contain only SPELL_AURA_REMOVED when the last charge is
+        // consumed. Do not discard the spell just because APPLIED happened
+        // outside the captured segment.
+        if (!appliedEvents.length && !(isBoneShield && auraEvents.length)) return;
+        const sourceCheckEvents = appliedEvents.length ? appliedEvents : auraEvents;
+        const isSelfSourced = sourceCheckEvents.every((ev) => ev[2] === selfName);
+        const isKnownSelfTargetPersonalBuff = SELF_TARGET_PERSONAL_BUFF_IDS.has(String(id))
+          && sourceCheckEvents.some((ev) => ev[3] === selfName);
+        if (!isSelfSourced && !isKnownSelfTargetPersonalBuff && !RAID_COOLDOWN_WHITELIST_IDS.has(String(id))) return; // buff/debuff de otro jugador o del boss
 
         const name = (spellInfo[id] && spellInfo[id].name) || `Spell #${id}`;
 
-        const buildIntervals = (evs) => {
-          let upSince = null;
+        const buildIntervals = (evs, inferActiveAtPull = false) => {
+          const sorted = [...evs].sort((a, b) => Number(a[0]) - Number(b[0]));
+          const firstAuraEvent = sorted.find((ev) => ['SPELL_AURA_APPLIED', 'SPELL_AURA_REFRESH', 'SPELL_AURA_REMOVED'].includes(ev[1]));
+          // If the first Bone Shield evidence in the segment is REMOVED, the
+          // application necessarily happened before the pull, so count it as
+          // active from t=0 until that removal.
+          let upSince = inferActiveAtPull && firstAuraEvent && firstAuraEvent[1] === 'SPELL_AURA_REMOVED' ? 0 : null;
           let totalUp = 0;
           const intervals = [];
-          evs.forEach((ev) => {
+          sorted.forEach((ev) => {
             const [ms, flag] = ev;
-            if (flag === 'SPELL_AURA_APPLIED') {
+            if (flag === 'SPELL_AURA_APPLIED' || flag === 'SPELL_AURA_REFRESH') {
               if (upSince === null) upSince = ms;
             } else if (flag === 'SPELL_AURA_REMOVED') {
               if (upSince !== null) {
@@ -930,7 +1113,7 @@ import {
         const selfEvents = events.filter((ev) => ev[3] === selfName);
         let chosen;
         if (selfEvents.length) {
-          chosen = buildIntervals(selfEvents);
+          chosen = buildIntervals(selfEvents, isBoneShield);
         } else {
           const byTarget = {};
           events.forEach((ev) => {
@@ -939,27 +1122,49 @@ import {
           });
           let best = null;
           Object.keys(byTarget).forEach((target) => {
-            const candidate = buildIntervals(byTarget[target]);
+            const candidate = buildIntervals(byTarget[target], isBoneShield && target === selfName);
             if (!best || candidate.totalUp > best.totalUp) best = candidate;
           });
           chosen = best || { intervals: [], totalUp: 0 };
         }
         intervalsByName[name] = chosen.intervals;
+        intervalsById[id] = chosen.intervals;
 
         if (fightMs) {
           let category = 'other';
-          if (rotationCfg.rotationNames.includes(name)) category = 'rotation';
-          else if (rotationCfg.cooldownSnapshot && rotationCfg.cooldownSnapshot.uptimeNames.includes(name)) category = 'gargoyle';
+          const byId = (list) => Array.isArray(list) && list.includes(String(id));
+          if (rotationCfg.rotationNames.includes(name) || byId(rotationCfg.rotationSpellIds)) category = 'rotation';
+          else if (rotationCfg.cooldownSnapshot && (rotationCfg.cooldownSnapshot.uptimeNames.includes(name) || byId(rotationCfg.cooldownSnapshot.uptimeSpellIds))) category = 'gargoyle';
           summary.uptimes.push({ id, name, pct: Math.min(100, (chosen.totalUp / fightMs) * 100), category });
         }
       });
       // Orden fijo en Rotation (el mismo de tu ejemplo), el resto por %.
+      // rotationSpellIds es el fallback inmune al idioma del log — si el
+      // nombre no matchea (log en otro idioma) pero el ID sí, usamos esa
+      // posición para no perder el orden fijo.
+      const rotationRank = (u) => {
+        const byName = rotationCfg.rotationNames.indexOf(u.name);
+        if (byName !== -1) return byName;
+        return Array.isArray(rotationCfg.rotationSpellIds) ? rotationCfg.rotationSpellIds.indexOf(String(u.id)) : -1;
+      };
       summary.uptimes.sort((a, b) => {
         if (a.category === 'rotation' && b.category === 'rotation') {
-          return rotationCfg.rotationNames.indexOf(a.name) - rotationCfg.rotationNames.indexOf(b.name);
+          return rotationRank(a) - rotationRank(b);
         }
         return b.pct - a.pct;
       });
+
+      // DIAGNÓSTICO TEMPORAL — para armar un matching por spell ID que no
+      // dependa del idioma del log (ver conversación sobre logs en español
+      // vs inglés). Corriendo esto sobre un log en INGLÉS (que ya sabemos
+      // que funciona bien) da los IDs reales de cada nombre tal como los
+      // devuelve ESTE servidor — más confiable que buscarlos en wikis
+      // externas, que pueden tener rangos/versiones distintas. Sacar esta
+      // línea una vez que rotation-config.js/frost-dk.js migren a IDs.
+      console.log(`Rotation analysis — spell ID map (name -> id) for "${raw.NAME}":`, JSON.stringify(
+        Object.fromEntries(spellIds.map((id) => [(spellInfo[id] && spellInfo[id].name) || `Spell #${id}`, id])),
+        null, 2,
+      ));
 
       // GCD delay: juntamos todos los SPELL_CAST_SUCCESS de todos los
       // hechizos (son casteos reales, no swings de melee ni ticks), los
@@ -970,12 +1175,32 @@ import {
       // hueco por encima de eso. Es una aproximación, no un cálculo exacto.
       const allCasts = [];
       const castsBySpellName = {};
+      const castsBySpellId = {}; // fallback inmune al idioma del log
       // Buffs propios activos en el instante ms, usando los intervalos ya
       // armados arriba (self-sourced únicamente, igual que el resto del análisis).
+      const procDefs = rotationCfg.procDefs || [];
       const buffsActiveAt = (ms) => Object.keys(intervalsByName)
         .filter((name) => !rotationCfg.timelineBuffExclude.includes(name))
         .filter((name) => intervalsByName[name].some(([s, e]) => ms >= s && ms <= e))
         .map((name) => ({ name, icon: iconByName[name] || null }));
+      // Un proc se muestra en la fila del casteo que lo CONSUME (no en
+      // cada fila donde el buff está activo): si este cast (por id) es un
+      // "spender" del proc, el buff estaba activo en ese instante, Y este
+      // es el ÚLTIMO casteo dentro de esa ventana — el que realmente la
+      // cierra (si hay varios casteos dentro de una misma ventana, solo
+      // el último la consume de verdad; mismo criterio que frost-dk.js).
+      const procsUsedAt = (ms, castId) => procDefs
+        .filter((d) => d.spenderIds.includes(String(castId)))
+        .filter((d) => {
+          const interval = (intervalsById[d.buffId] || []).find(([s, e]) => ms >= s && ms <= e);
+          if (!interval) return false;
+          const [s, e] = interval;
+          const spenderCastsInWindow = d.spenderIds
+            .flatMap((sid) => castsBySpellId[sid] || [])
+            .filter((t) => t >= s && t <= e);
+          return spenderCastsInWindow.length > 0 && Math.max(...spenderCastsInWindow) === ms;
+        })
+        .map((d) => ({ name: d.label, icon: iconById[d.buffId] || null }));
       // {ms, name, icon, buffs, rp, runes} — timeline completo del intento, del
       // segundo 0 al final. rp (poder rúnico) y runes todavía no se calculan:
       // el combat log no trae el estado de recursos por evento con lo que
@@ -988,11 +1213,20 @@ import {
       // hechizo: si aparece SPELL_CAST_SUCCESS para ese ID lo usamos (más
       // preciso, marca cuando termina); si no, usamos SPELL_CAST_START.
       const timelineEntries = [];
+      // PRIMERA PASADA: solo juntar los casteos propios de cada hechizo
+      // (castsBySpellName/castsBySpellId). Separado de la segunda pasada
+      // a propósito: procsUsedAt necesita conocer TODOS los casteos de
+      // Obliterate/Frost Strike de la pelea entera para decidir cuál de
+      // ellos cierra cada ventana de proc — si lo calculáramos casteo a
+      // casteo en un solo pase, todavía no tendríamos los casteos futuros
+      // de un hechizo que se procesa más adelante en spellIds.forEach.
+      const castEventsBySpell = {}; // id -> [{ms, target}, ...] ya resueltos, para no repetir el trabajo en la 2da pasada
       spellIds.forEach((id) => {
         const name = (spellInfo[id] && spellInfo[id].name) || `Spell #${id}`;
         const events = (dataBySpell[id] || []).slice().sort((a, b) => a[0] - b[0]);
         const hasCastSuccess = events.some((ev) => ev[1] === 'SPELL_CAST_SUCCESS' && ev[2] === selfName);
         const castFlag = hasCastSuccess ? 'SPELL_CAST_SUCCESS' : 'SPELL_CAST_START';
+        const resolved = [];
         events.forEach((ev, idx) => {
           if (ev[1] === castFlag && ev[2] === selfName) {
             let target = ev[3];
@@ -1009,8 +1243,19 @@ import {
             }
             allCasts.push(ev[0]);
             (castsBySpellName[name] = castsBySpellName[name] || []).push(ev[0]);
-            timelineEntries.push({ ms: ev[0], name, icon: iconByName[name] || null, target: (target && target !== 'nil') ? target : null, buffs: buffsActiveAt(ev[0]), rp: null, runes: null });
+            (castsBySpellId[id] = castsBySpellId[id] || []).push(ev[0]);
+            resolved.push({ ms: ev[0], target: (target && target !== 'nil') ? target : null });
           }
+        });
+        if (resolved.length) castEventsBySpell[id] = resolved;
+      });
+      // SEGUNDA PASADA: ahora que castsBySpellId ya está completo para
+      // TODOS los hechizos, recién acá armamos cada fila del timeline —
+      // buffsActiveAt/procsUsedAt necesitan ese panorama completo.
+      Object.keys(castEventsBySpell).forEach((id) => {
+        const name = (spellInfo[id] && spellInfo[id].name) || `Spell #${id}`;
+        castEventsBySpell[id].forEach(({ ms, target }) => {
+          timelineEntries.push({ ms, id, name, icon: iconByName[name] || null, target, buffs: buffsActiveAt(ms), procs: procsUsedAt(ms, id), rp: null, runes: null });
         });
       });
       allCasts.sort((a, b) => a - b);
@@ -1031,11 +1276,14 @@ import {
       // Casteos que nos interesa contar en vez de uptime-ar (ej. Horn of
       // Winter: si lo casteás muchísimas veces de más, suele ser spam de
       // macro en vez de recastearlo solo cuando se cae el buff).
-      rotationCfg.castCountSpells.forEach((name) => {
-        const times = castsBySpellName[name];
+      // castCountSpellIds es el fallback por ID, inmune al idioma del log —
+      // mismo orden que castCountSpells si está definido para esa clase.
+      rotationCfg.castCountSpells.forEach((name, i) => {
+        const fallbackId = rotationCfg.castCountSpellIds && rotationCfg.castCountSpellIds[i];
+        const times = castsBySpellName[name] || (fallbackId ? castsBySpellId[fallbackId] : null);
         if (times && times.length) {
           summary.castNotes.push({
-            name,
+            name: (fallbackId && !castsBySpellName[name] && castsBySpellId[fallbackId]) ? displayNameForId(fallbackId) : name,
             count: times.length,
             macroSpam: times.length >= rotationCfg.macroSpamThreshold,
           });
@@ -1046,23 +1294,31 @@ import {
       // buffs de snapshot estaban activos en el momento exacto de cada uso,
       // y si hubo un casteo de seguimiento poco después (ej. cambio de
       // presencia). Solo aplica a clases con cooldownSnapshot definido.
+      // *SpellId(s) son el fallback inmune al idioma — quedan sin definir
+      // en la config para los hechizos que todavía no confirmamos contra
+      // datos reales (ver frost-dk.js para el porqué de esta precaución).
       const snap = rotationCfg.cooldownSnapshot;
       if (snap) {
-        const summonTimes = castsBySpellName[snap.summonSpellName] || [];
+        const summonTimes = castsBySpellName[snap.summonSpellName] || (snap.summonSpellId && castsBySpellId[snap.summonSpellId]) || [];
         if (summonTimes.length) {
-          const isActiveAt = (name, t) => (intervalsByName[name] || []).some(([s, e]) => t >= s && t <= e);
-          const followUpCasts = castsBySpellName[snap.followUpSpellName] || [];
+          const isActiveAt = (name, id, t) => {
+            if ((intervalsByName[name] || []).some(([s, e]) => t >= s && t <= e)) return true;
+            if (id && (intervalsById[id] || []).some(([s, e]) => t >= s && t <= e)) return true;
+            return false;
+          };
+          const followUpCasts = castsBySpellName[snap.followUpSpellName] || (snap.followUpSpellId && castsBySpellId[snap.followUpSpellId]) || [];
           summary.gargoyle = {
             uses: summonTimes.length,
             snapshots: summonTimes.map((t) => ({
               time: t,
-              active: snap.snapshotCheckNames.filter((name) => isActiveAt(name, t)),
+              active: snap.snapshotCheckNames.filter((name, i) => isActiveAt(name, snap.snapshotCheckSpellIds && snap.snapshotCheckSpellIds[i], t)),
               bloodPresenceAfter: followUpCasts.some((bt) => bt > t && bt - t <= 3000),
             })),
           };
         }
       }
       summary.debugIntervalsByName = intervalsByName; // solo para diagnóstico en consola
+      summary.debugIntervalsById = intervalsById; // id -> intervalos, inmune al idioma del log
     } catch (err) {
       summary.parseError = err.message;
     }
@@ -1076,6 +1332,37 @@ import {
     const attempt = await findKillAttemptIndex(reportId, bossHtml, playerName);
     const raw = await fetchCastsTimeline(reportId, bossHtml, attempt, playerName);
     const result = summarizeDkTimeline(raw);
+
+    // Complemento de daño de pets: report_casts no trae eventos source=pet,
+    // pero la tabla HTML de Damage sí los agrega al jugador para este mismo
+    // intento (mismos boss/mode/attempt/s/f). Un fallo acá no debe romper el
+    // resto del análisis de rotación.
+    try {
+      const playerHtml = await fetchPlayerDamagePage(reportId, bossHtml, attempt, playerName);
+      const unholyPreview = isUnholyDk(result) ? computeUnholyAnalysis(result) : null;
+      const ghoulName = unholyPreview ? unholyPreview.ghoulName : null;
+      result.petDamage = parsePlayerPetDamageHtml(playerHtml, ghoulName);
+
+      // El owner page agrega todas las Gargoyles. Para encuentros con varias
+      // invocaciones, consultamos cada entidad Ebon Gargoyle por GUID en el
+      // mismo slice y conservamos solo las que hicieron daño en este fight.
+      if (unholyPreview && unholyPreview.gargoyle && result.petDamage.gargoyleUnitIds.length) {
+        const instanceResults = await Promise.all(result.petDamage.gargoyleUnitIds.map(async (unitId) => {
+          try {
+            const unitHtml = await fetchPlayerDamagePage(reportId, bossHtml, attempt, unitId);
+            const parsed = parseUnitDamageHtml(unitHtml);
+            return parsed.damage > 0 ? { unitId, ...parsed } : null;
+          } catch (_) {
+            return null;
+          }
+        }));
+        result.petDamage.gargoyleInstances = instanceResults.filter(Boolean).slice(0, unholyPreview.gargoyle.uses);
+      }
+    } catch (err) {
+      console.log(`Rotation analysis — pet damage unavailable: ${err.message}`);
+      result.petDamageError = err.message;
+    }
+
     dkAnalysisCache[cacheKey] = result;
     return result;
   }
@@ -1553,6 +1840,22 @@ import {
     const gargoyleUptimes = result.uptimes.filter((u) => u.category === 'gargoyle');
     const otherUptimes = result.uptimes.filter((u) => u.category === 'other');
     const frost = isFrostDk(result) ? computeFrostAnalysis(result) : null;
+    const unholy = (!frost && isUnholyDk(result)) ? computeUnholyAnalysis(result) : null;
+    if (frost && frost.killingMachine) {
+      // Diagnóstico puntual: intervalos calculados de Killing Machine
+      // (APPLIED->REMOVED) contra los casteos reales de Obliterate/Frost
+      // Strike, para verificar a mano si "used" está bien calculado.
+      const kmIntervals = (result.debugIntervalsById && result.debugIntervalsById['51124']) || [];
+      const spenderCasts = result.timeline
+        .filter((t) => t.id === '51425' || t.id === '55268')
+        .map((t) => ({ ms: t.ms, name: t.name }));
+      console.log('Rotation analysis — Killing Machine diagnostics:\n' + JSON.stringify({
+        intervals: kmIntervals.map(([s, e]) => ({ start: formatTimelineMs(s), end: formatTimelineMs(e), start_ms: s, end_ms: e, duration_sec: ((e - s) / 1000).toFixed(1) })),
+        obliterate_and_frost_strike_casts: spenderCasts.map((c) => ({ time: formatTimelineMs(c.ms), ms: c.ms, name: c.name })),
+        computed_used: frost.killingMachine.used,
+        computed_total: frost.killingMachine.total,
+      }, null, 2));
+    }
 
     const INFO_ONLY_UPTIMES = new Set(['Bone Shield']);
     const EVAL_THRESHOLD = 90;
@@ -1565,7 +1868,12 @@ import {
       return `<div class="dk-row ${good ? 'dk-row-good' : 'dk-row-warn'}"><span class="dk-row-icon">${good ? '✔' : '⚠'}</span><span class="dk-row-label">${u.name} uptime</span><span class="dk-row-value">${u.pct.toFixed(2)}%</span></div>`;
     };
     const infoRow = (label, value) => `<div class="dk-row dk-row-info"><span class="dk-row-icon">ℹ</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
-    const checkRow = (label, value, ok) => `<div class="dk-row ${ok ? 'dk-row-good' : 'dk-row-warn'}"><span class="dk-row-icon">${ok ? '✔' : '⚠'}</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
+    const boolValue = (ok) => `<span class="dk-status-icon ${ok ? 'is-ok' : 'is-bad'}" aria-label="${ok ? 'yes' : 'no'}" title="${ok ? 'yes' : 'no'}">${ok ? '✔' : '✖'}</span>`;
+    const checkRow = (label, value, ok) => `<div class="dk-row ${ok ? 'dk-row-good' : 'dk-row-bad'}"><span class="dk-row-icon">${ok ? '✔' : '✖'}</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
+    const fmtInt = (value) => Math.round(Number(value) || 0).toLocaleString('en-US');
+    const damageShare = (amount) => result.petDamage && result.petDamage.playerTotalDamage > 0
+      ? `${((amount / result.petDamage.playerTotalDamage) * 100).toFixed(2)}%`
+      : '–';
 
     const castNoteRows = result.castNotes.map((c) =>
       c.macroSpam
@@ -1582,7 +1890,9 @@ import {
     const frostScoreColor = (s) => (s >= 90 ? '#F4C35A' : s >= 75 ? '#a335ee' : s >= 50 ? '#0070de' : '#e3b341');
     const scoreRow = frost && frost.score != null
       ? `<div class="dk-analysis-header-row"><span>Frost Score:</span><span class="dk-score-badge" style="color:${frostScoreColor(frost.score)}">${frost.score}/100</span></div>`
-      : '';
+      : unholy && unholy.score != null
+        ? `<div class="dk-analysis-header-row"><span>Unholy Score:</span><span class="dk-score-badge" style="color:${frostScoreColor(unholy.score)}">${unholy.score}/100</span></div>`
+        : '';
     const header = `
       <div class="dk-analysis-header">
         <div class="dk-analysis-header-row"><span>Player:</span><span style="color: ${headerNameColor}; font-weight: 600;">${headerPlayerName}</span></div>
@@ -1600,7 +1910,7 @@ import {
     const obliterateDriftRow = frost
       ? infoRow('Obliterate rune drift', 'not tracked yet (needs rune state, not exposed by the API)')
       : '';
-    const speedSection = (result.gcdDelayMs != null || kmRow)
+    const speedSection = frost && (result.gcdDelayMs != null || kmRow)
       ? `<div class="dk-analysis-section-title">Speed</div>
          <div class="dk-analysis-spells">
            ${result.gcdDelayMs != null ? infoRow('Avg. GCD delay (approx.)', `${result.gcdDelayMs.toFixed(0)} ms`) : ''}
@@ -1619,6 +1929,7 @@ import {
       : '';
     const howlingBlastRow = frost && frost.howlingBlast
       ? checkRow('Howling Blast casts with Rime active', `${frost.howlingBlast.goodCount} of ${frost.howlingBlast.total}`, frost.howlingBlast.goodCount === frost.howlingBlast.total)
+        + (frost.howlingBlast.comboCount > 0 ? infoRow('Rime + Killing Machine combo (free crit)', `${frost.howlingBlast.comboCount} time${frost.howlingBlast.comboCount === 1 ? '' : 's'}`) : '')
       : '';
     const rimeRow = frost && frost.rime
       ? checkRow('Rime procs used', `${frost.rime.used} of ${frost.rime.total}`, frost.rime.used === frost.rime.total)
@@ -1626,41 +1937,195 @@ import {
     const rpOvercapRow = frost
       ? infoRow('Runic Power over-capping', 'not tracked yet (needs RP state, not exposed by the API)')
       : '';
-    const rotationSection = (rotationUptimes.length || castNoteRows || uaRows || howlingBlastRow || rimeRow)
+
+    // --- Unholy DK: Summary layout ---
+    const pctMetricRow = (label, value) => value == null
+      ? infoRow(label, 'not detected / unavailable')
+      : infoRow(label, `${Number(value).toFixed(2)}%`);
+    const diseasePct = (spellId) => unholy
+      ? ((unholy.diseaseUptimes || []).find((u) => String(u.id) === String(spellId)) || {}).pct
+      : null;
+
+    const unholyRotationSection = unholy
       ? `<div class="dk-analysis-section-title">Rotation</div>
          <div class="dk-analysis-spells">
-           ${uaRows}
-           ${howlingBlastRow}
-           ${rpOvercapRow}
-           ${rimeRow}
-           ${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}
-         </div>
-         ${frost && frost.howlingBlast && frost.howlingBlast.goodCount !== frost.howlingBlast.total ? '<div class="dk-analysis-note">Howling Blast without Rime is only worth casting on 3+ targets — this check can only confirm Rime uptime, not how many targets a given cast hit.</div>' : ''}`
+           ${pctMetricRow('Death and Decay uptime', unholy.deathAndDecayPct)}
+           ${pctMetricRow('Desolation uptime', unholy.desolationPct)}
+           ${pctMetricRow('Sigil of Virulence uptime', unholy.sigilOfVirulencePct)}
+           ${pctMetricRow('Unholy Might (T9 2p) uptime', unholy.unholyMightT9Pct)}
+           ${unholy.meleePct != null ? pctMetricRow('Melee uptime', unholy.meleePct) : infoRow('Melee uptime', 'not tracked yet (report_casts does not expose swing uptime)')}
+           ${pctMetricRow('Blood Plague uptime', diseasePct('55078'))}
+           ${pctMetricRow('Frost Fever uptime', diseasePct('55095'))}
+           ${pctMetricRow('Blood Presence (outside of Gargoyle) uptime', unholy.bloodPresenceOutsideGargoylePct)}
+           ${checkRow('You used Blood Tap', `${unholy.bloodTapCount} of ${unholy.bloodTapPossible} possible times`, unholy.bloodTapCount >= unholy.bloodTapPossible)}
+           ${pctMetricRow('Bone Shield uptime', unholy.boneShieldPct)}
+         </div>`
       : '';
 
+    const rotationSection = unholy
+      ? unholyRotationSection
+      : (rotationUptimes.length || castNoteRows || uaRows || howlingBlastRow || rimeRow)
+        ? `<div class="dk-analysis-section-title">Rotation</div>
+           <div class="dk-analysis-spells">
+             ${uaRows}
+             ${howlingBlastRow}
+             ${rpOvercapRow}
+             ${rimeRow}
+             ${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}
+           </div>
+           ${frost && frost.howlingBlast && frost.howlingBlast.goodCount !== frost.howlingBlast.total ? '<div class="dk-analysis-note">Howling Blast without Rime is only worth casting on 3+ targets — this check can only confirm Rime uptime, not how many targets a given cast hit.</div>' : ''}`
+        : '';
+
     const snapMeta = result.gargoyleMeta;
-    const gargoyleSection = result.gargoyle && snapMeta
+    const petDamage = result.petDamage || null;
+    const gargoyleDamage = petDamage && petDamage.gargoyle ? petDamage.gargoyle : null;
+    const gargoyleInstances = petDamage && Array.isArray(petDamage.gargoyleInstances) ? petDamage.gargoyleInstances : [];
+    const ghoulDamage = petDamage && petDamage.ghoul ? petDamage.ghoul : null;
+    const armyDamage = petDamage && petDamage.armyOfTheDead ? petDamage.armyOfTheDead : null;
+    const KNOWN_PROC_NAMES = {
+      '67708': 'Paragon',
+      '67773': 'Paragon',
+    };
+    const KNOWN_TRINKET_PROC_NAMES = new Set(['Paragon', 'Greatness']);
+    const spellNameFor = (id, fallback) => {
+      const spells = (result.raw && (result.raw.SPELLS || result.raw.spells)) || {};
+      const rawName = spells[id] && (spells[id].name || spells[id].NAME);
+      const uptimeName = result.uptimes && result.uptimes.find((u) => String(u.id) === String(id))?.name;
+      const countName = result.spellCounts && result.spellCounts.find((s) => String(s.id) === String(id))?.name;
+      const detected = rawName || uptimeName || countName;
+      return detected && !/^Spell #/i.test(detected) ? detected : (KNOWN_PROC_NAMES[String(id)] || fallback);
+    };
+    const intervalActiveAt = (id, ms) => {
+      const intervals = result.debugIntervalsById && result.debugIntervalsById[String(id)];
+      return Array.isArray(intervals) && intervals.some(([start, end]) => ms >= start && ms <= end);
+    };
+    const activeTrinketProcs = (w) => {
+      // Deduplicate by spell ID, never by visible proc name. This matters for
+      // Death's Choice / Death's Verdict normal + heroic: both can expose the
+      // visible aura name "Paragon" while being two distinct equipped trinkets.
+      const byId = new Map();
+
+      for (const id of ['67708', '67773']) {
+        if (intervalActiveAt(id, w.start)) {
+          byId.set(String(id), { id: String(id), name: spellNameFor(id, 'Paragon') });
+        }
+      }
+
+      // Also accept known trinket procs exposed directly by UwU Logs/Uptimes,
+      // e.g. Greatness. Repeated sightings of the SAME spell ID collapse to
+      // one row, while two different IDs with the same name remain separate.
+      for (const u of (result.uptimes || [])) {
+        const id = String(u.id || '');
+        const name = String(u.name || '').trim();
+        if (!id || !KNOWN_TRINKET_PROC_NAMES.has(name)) continue;
+        if (intervalActiveAt(id, w.start) && !byId.has(id)) {
+          byId.set(id, { id, name });
+        }
+      }
+
+      return [...byId.values()];
+    };
+    const trinketSnapshotRows = (w) => activeTrinketProcs(w)
+      .map((proc) => checkRow(`Your snapshotted ${proc.name}`, boolValue(true), true))
+      .join('');
+
+    const gargoyleDamageForWindow = (w) => {
+      const instance = gargoyleInstances[w.index - 1];
+      if (instance) return infoRow('Damage', `${fmtInt(instance.damage)} (${fmtInt(instance.casts)} casts, ${fmtInt(instance.hits)} hits)`);
+      if (unholy.gargoyle.uses === 1 && gargoyleDamage && gargoyleDamage.damage > 0) {
+        return infoRow('Damage', `${fmtInt(gargoyleDamage.damage)} (${fmtInt(gargoyleDamage.casts)} casts, ${fmtInt(gargoyleDamage.hits)} hits)`);
+      }
+      return infoRow('Damage', gargoyleDamage && gargoyleDamage.damage > 0
+        ? `per-summon split unavailable; encounter total ${fmtInt(gargoyleDamage.damage)}`
+        : (result.petDamageError ? `unavailable (${result.petDamageError})` : '0 / not detected'));
+    };
+
+    const unholyGargoyleSection = unholy && unholy.gargoyle
+      ? `<div class="dk-analysis-section-title">Gargoyle</div>
+         <div class="dk-analysis-spells">
+           ${checkRow('You used Gargoyle', `${unholy.gargoyle.uses} of ${unholy.gargoyle.possible} possible times`, unholy.gargoyle.uses >= unholy.gargoyle.possible)}
+           ${unholy.gargoyle.windows.map((w) => `
+             <div class="dk-analysis-section-title" style="font-size:11px;margin-top:10px;">Gargoyle #${w.index}${w.withErw ? ' (with ERW)' : ''} — ${w.durationSec.toFixed(1)}s</div>
+             ${gargoyleDamageForWindow(w)}
+             ${checkRow('Unholy Presence', boolValue(w.unholyPresence), w.unholyPresence)}
+             ${checkRow('Bloodlust / Heroism', boolValue(w.bloodlustOrHeroism), w.bloodlustOrHeroism)}
+             ${checkRow('Hyperspeed', boolValue(w.hyperspeed), w.hyperspeed)}
+             ${checkRow('Speed', boolValue(w.speedPotion), w.speedPotion)}
+             ${trinketSnapshotRows(w)}
+             ${checkRow('Your snapshotted Fallen Crusader', boolValue(w.fallenCrusader), w.fallenCrusader)}
+             ${checkRow('Your snapshotted Sigil of Virulence', boolValue(w.sigilOfVirulence), w.sigilOfVirulence)}
+             ${checkRow('Your snapshotted Unholy Might (T9 2pc)', boolValue(w.unholyMightT9), w.unholyMightT9)}
+             ${checkRow('Your snapshotted Skyflare Swiftness', boolValue(w.skyflareSwiftness), w.skyflareSwiftness)}
+             ${checkRow('Your snapshotted Black Magic', boolValue(w.blackMagic), w.blackMagic)}
+           `).join('')}
+         </div>
+         `
+      : '';
+    const gargoyleSection = unholyGargoyleSection || (result.gargoyle && snapMeta
       ? `<div class="dk-analysis-section-title">${snapMeta.sectionTitle}</div>
          <div class="dk-analysis-spells">
            ${infoRow('Times used', result.gargoyle.uses)}
            ${result.gargoyle.snapshots.map((s, i) => `
              ${checkRow(`Use #${i + 1} — snapshot`, s.active.length ? s.active.join(', ') : 'none', !!s.active.length)}
-             ${checkRow(`Use #${i + 1} — ${snapMeta.followUpLabel}`, s.bloodPresenceAfter ? 'yes' : 'no', s.bloodPresenceAfter)}
+             ${checkRow(`Use #${i + 1} — ${snapMeta.followUpLabel}`, boolValue(s.bloodPresenceAfter), s.bloodPresenceAfter)}
            `).join('')}
            ${gargoyleUptimes.map(uptimeRow).join('')}
          </div>
          <div class="dk-analysis-note">${snapMeta.note}</div>`
+      : '');
+
+    const armyOfTheDeadSection = unholy && unholy.armyOfTheDead
+      ? `<div class="dk-analysis-section-title">Army of the Dead</div>
+         <div class="dk-analysis-spells">
+           ${armyDamage && armyDamage.damage > 0 ? infoRow('Damage', fmtInt(armyDamage.damage)) : infoRow('Damage', result.petDamageError ? 'unavailable' : '0 / not detected')}
+           ${unholy.armyOfTheDead.map((a, i) => `
+             ${unholy.armyOfTheDead.length > 1 ? `<div class="dk-analysis-section-title" style="font-size:11px;margin-top:10px;">Army #${i + 1}</div>` : ''}
+             ${checkRow('Your snapshotted Bloodlust / Heroism', boolValue(a.bloodlustOrHeroism), a.bloodlustOrHeroism)}
+             ${checkRow('Your snapshotted Hyperspeed', boolValue(a.hyperspeed), a.hyperspeed)}
+             ${checkRow('Your snapshotted Skyflare Swiftness', boolValue(a.skyflareSwiftness), a.skyflareSwiftness)}
+             ${checkRow('Your snapshotted Speed', boolValue(a.speedPotion), a.speedPotion)}
+             ${checkRow('Your snapshotted Black Magic', boolValue(a.blackMagic), a.blackMagic)}
+           `).join('')}
+         </div>`
       : '';
 
-    const consumableRows = frost && frost.consumables
-      ? checkRow('Flask of Endless Rage', frost.consumables.flaskUsed ? 'yes' : 'no', frost.consumables.flaskUsed)
-        + checkRow('Potions used (Speed / Indestructible)', `${frost.consumables.potionUses.length} of ${MAX_POTIONS_EXPECTED}`, frost.consumables.potionUses.length >= MAX_POTIONS_EXPECTED)
-        + (frost.consumables.prepotOk != null ? checkRow('First potion was a pre-pot (≤60s before pull)', frost.consumables.prepotOk ? 'yes' : 'no', frost.consumables.prepotOk) : '')
+    const ghoulRows = ghoulDamage && Array.isArray(ghoulDamage.rows) ? ghoulDamage.rows : [];
+    const ghoulDetectedName = (petDamage && petDamage.ghoulName) || (unholy && unholy.ghoulName) || null;
+    const clawRows = ghoulRows.filter((r) => /^Claw\b/i.test(r.name));
+    const gnawRows = ghoulRows.filter((r) => /^Gnaw\b/i.test(r.name));
+    const clawCasts = clawRows.reduce((sum, r) => sum + (r.casts || 0), 0);
+    const gnawCasts = gnawRows.reduce((sum, r) => sum + (r.casts || 0), 0);
+    const fightMinutes = result.raw && result.raw.RDURATION ? Number(result.raw.RDURATION) / 60 : 0;
+    const clawPerMinute = fightMinutes > 0 && clawRows.length ? clawCasts / fightMinutes : null;
+    const ghoulSection = unholy && ghoulDamage && ghoulDamage.damage > 0
+      ? `<div class="dk-analysis-section-title">Ghoul</div>
+         <div class="dk-analysis-spells">
+           ${ghoulDetectedName ? infoRow('Pet', ghoulDetectedName) : ''}
+           ${infoRow('Damage', fmtInt(ghoulDamage.damage))}
+           ${clawPerMinute != null ? infoRow('You casted Claw', `${clawPerMinute.toFixed(2)} times per minute (${clawCasts} total)`) : ''}
+           ${gnawRows.length ? infoRow('Gnaw', gnawCasts > 0 ? `used ${gnawCasts} time${gnawCasts === 1 ? '' : 's'}` : 'not used') : infoRow('Gnaw', 'not used')}
+         </div>`
       : '';
-    const miscSection = (otherUptimes.length || consumableRows)
+
+
+    const consumableRows = frost && frost.consumables
+      ? checkRow('Flask of Endless Rage', boolValue(frost.consumables.flaskUsed), frost.consumables.flaskUsed)
+        + checkRow('Potions used (Speed / Indestructible)', `${frost.consumables.potionUses.length} of ${MAX_POTIONS_EXPECTED}`, frost.consumables.potionUses.length >= MAX_POTIONS_EXPECTED)
+        + (frost.consumables.prepotOk != null ? checkRow('First potion was a pre-pot (≤60s before pull)', boolValue(frost.consumables.prepotOk), frost.consumables.prepotOk) : '')
+      : '';
+    const unholyConsumableRows = unholy && unholy.consumables
+      ? checkRow('You used Hyperspeed Accelerators', `${unholy.consumables.hyperspeed.used} of ${unholy.consumables.hyperspeed.possible} possible times`, unholy.consumables.hyperspeed.used >= unholy.consumables.hyperspeed.possible)
+        + checkRow('You used Global Thermal Sapper Charge', `${unholy.consumables.globalThermalSapperCharge.used} of ${unholy.consumables.globalThermalSapperCharge.possible} possible times`, unholy.consumables.globalThermalSapperCharge.used >= unholy.consumables.globalThermalSapperCharge.possible)
+        + checkRow('You used Saronite Bomb', `${unholy.consumables.saroniteBomb.used} of ${unholy.consumables.saroniteBomb.possible} possible times`, unholy.consumables.saroniteBomb.used >= unholy.consumables.saroniteBomb.possible)
+        + checkRow('You had a Flask of Endless Rage', boolValue(unholy.consumables.flaskUsed), unholy.consumables.flaskUsed)
+      : '';
+    const miscSection = (consumableRows || unholyConsumableRows)
       ? `<div class="dk-analysis-section-title">Miscellaneous</div>
-         <div class="dk-analysis-spells">${consumableRows}${otherUptimes.map(uptimeRow).join('')}</div>
-         ${frost && frost.consumables && !frost.consumables.flaskUsed ? '<div class="dk-analysis-note">A flask cast well before the pre-pull capture window (15s) won\'t show an apply event — "no" can mean "not detected", not necessarily "not used".</div>' : ''}`
+         <div class="dk-analysis-spells">${consumableRows}${unholyConsumableRows}</div>`
+      : '';
+    const otherUptimesSection = otherUptimes.length
+      ? `<div class="dk-analysis-section-title">Other Uptimes</div>
+         <div class="dk-analysis-spells">${otherUptimes.map(uptimeRow).join('')}</div>`
       : '';
 
     const nothingFound = !rotationUptimes.length && !otherUptimes.length && !result.gargoyle && !castNoteRows
@@ -1669,13 +2134,14 @@ import {
 
     const summaryTabHtml = `
       ${header}
-      <div class="dk-analysis-summary">
-        <strong>${result.totalEvents}</strong> total events across <strong>${result.uniqueSpells}</strong> distinct spells during the kill attempt.
-      </div>
+      ${unholy ? '' : `<div class="dk-analysis-summary"><strong>${result.totalEvents}</strong> total events across <strong>${result.uniqueSpells}</strong> distinct spells during the kill attempt.</div>`}
       ${speedSection}
       ${rotationSection}
       ${gargoyleSection}
+      ${armyOfTheDeadSection}
+      ${ghoulSection}
       ${miscSection}
+      ${otherUptimesSection}
       ${nothingFound}
       <details class="dk-analysis-raw-toggle">
         <summary>View cast count by spell</summary>
@@ -1683,7 +2149,7 @@ import {
           ${result.spellCounts.slice(0, 15).map((s) => `<div class="dk-analysis-spell-row"><span>${s.name}</span><span>${s.count}</span></div>`).join('')}
         </div>
       </details>
-      ${isDkClass && !frost ? '<div class="dk-analysis-note">Rune drift and wasted runic power are not calculated yet.</div>' : ''}`;
+      ${isDkClass && !frost && !unholy ? '<div class="dk-analysis-note">Rune drift and wasted runic power are not calculated yet.</div>' : ''}`;
 
     // Ícono de wowhead a partir del nombre del ícono crudo (ej. "inv_sword_04").
     const iconImgHtml = (icon, name, size) => icon
@@ -1712,6 +2178,7 @@ import {
               <th>Ability</th>
               <th>Target</th>
               <th>Buffs</th>
+              <th>Procs</th>
             </tr>
           </thead>
           <tbody>
@@ -1724,7 +2191,8 @@ import {
                 <td class="dk-timeline-time">${formatTimelineMs(t.ms)}${gapHtml}</td>
                 <td class="dk-timeline-spell">${iconImgHtml(t.icon, t.name, 26)}<span>${t.name}</span></td>
                 <td class="dk-timeline-dim">${t.target && t.target !== 'nil' ? t.target : '–'}</td>
-                <td class="dk-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</td>
+                <td><div class="dk-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</div></td>
+                <td><div class="dk-timeline-procs">${t.procs && t.procs.length ? t.procs.map((p) => iconImgHtml(p.icon, `${p.name} used`, 22)).join('') : '–'}</div></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -1739,6 +2207,7 @@ import {
           <div class="lock-timeline-head">Ability</div>
           <div class="lock-timeline-head">Target</div>
           <div class="lock-timeline-head">Buffs</div>
+          <div class="lock-timeline-head">Procs</div>
           ${timelineRowsDesc.map((t, i) => {
             const prevMs = i === 0 ? null : timelineRowsDesc[i - 1].ms;
             const gapSec = prevMs === null ? null : (t.ms - prevMs) / 1000;
@@ -1747,7 +2216,8 @@ import {
             <div class="lock-timeline-cell lock-timeline-time">${formatTimelineMs(t.ms)}${gapHtml}</div>
             <div class="lock-timeline-cell lock-timeline-spell">${iconImgHtml(t.icon, t.name, 26)}<span>${t.name}</span></div>
             <div class="lock-timeline-cell lock-timeline-target">${t.target && t.target !== 'nil' ? t.target : '–'}</div>
-            <div class="lock-timeline-cell lock-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</div>`;
+            <div class="lock-timeline-cell lock-timeline-buffs">${t.buffs.length ? t.buffs.map((b) => iconImgHtml(b.icon, b.name, 22)).join('') : '–'}</div>
+            <div class="lock-timeline-cell lock-timeline-procs">${t.procs && t.procs.length ? t.procs.map((p) => iconImgHtml(p.icon, `${p.name} used`, 22)).join('') : '–'}</div>`;
           }).join('')}
         </div>
       </div>`;

@@ -2,10 +2,26 @@
 //
 // Depende únicamente de `result`, el objeto que ya arma
 // `summarizeDkTimeline()` en app.js (result.raw, result.timeline,
-// result.uptimes, result.spellCounts, result.debugIntervalsByName). No
+// result.uptimes, result.spellCounts, result.debugIntervalsById). No
 // vuelve a leer el DATA crudo de report_casts — reusa lo que ese parseo ya
 // calculó, para no tener dos lugares leyendo el mismo evento crudo con
 // criterios distintos.
+//
+// MATCHING POR SPELL ID, NO POR NOMBRE — IMPORTANTE:
+// uwu-logs.xyz devuelve el nombre de cada hechizo tal como lo capturó el
+// addon del jugador que subió el log, en SU idioma de cliente (confirmado:
+// logs de personajes con cliente en español devuelven nombres en español,
+// ej. "Fiebre de Escarcha" en vez de "Frost Fever"). Comparar por texto en
+// inglés rompía el análisis para esos logs. El spell ID en cambio es fijo
+// sin importar el idioma, así que todo el matching de acá es por ID.
+//
+// Los IDs de abajo se sacaron de datos REALES de report_casts (no de una
+// wiki externa) — confirmados contra un log en inglés del propio
+// servidor, para evitar el riesgo de un ID de rango/versión distinto. La
+// única excepción marcada es Flask of Endless Rage, sacado de wowhead/
+// wotlkdb (no apareció en el log de prueba porque ese personaje no lo
+// tenía puesto) — si en algún momento se confirma o corrige contra datos
+// reales, actualizar el comentario.
 //
 // LIMITACIÓN CONOCIDA (ver docs/API.md): el proxy/API nunca confirmó que
 // report_casts exponga el estado de Runic Power ni de las Runas por
@@ -17,18 +33,38 @@
 // Cooldown Alignment). Si en algún momento se confirma ese campo, esas dos
 // métricas son las próximas a sumar.
 
-const DISEASE_NAMES = ['Frost Fever', 'Blood Plague'];
+const SPELL = {
+  FROST_FEVER: '55095',
+  BLOOD_PLAGUE: '55078',
+  KILLING_MACHINE: '51124',
+  // El talento se llama "Rime", pero el BUFF que realmente aparece en el
+  // combat log cuando procea se llama "Freezing Fog" — confirmado con
+  // datos reales (no aparece ningún "Rime" en el mapa id->nombre de un
+  // log real, sí "Freezing Fog": 59052).
+  FREEZING_FOG_RIME_PROC: '59052',
+  UNBREAKABLE_ARMOR: '51271',
+  EMPOWER_RUNE_WEAPON: '47568',
+  OBLITERATE: '51425',
+  FROST_STRIKE: '55268',
+  HOWLING_BLAST: '51411',
+  // Buff de Potion of Speed — confirmado contra datos reales (nombre real: "Speed").
+  SPEED_POTION: '53908',
+  // No confirmado contra datos reales de este servidor (no apareció en el
+  // log de prueba) — sacado de wowhead/wotlkdb/wowclassicdb, que
+  // coinciden entre sí. Si falla, revisar acá primero.
+  FLASK_OF_ENDLESS_RAGE: '53903',
+};
+
 const DISEASE_UPTIME_TARGET = 95; // % — debajo de esto la categoría empieza a perder puntos
 
 const PROC_DEFS = [
-  { buffName: 'Killing Machine', spenderNames: ['Obliterate', 'Frost Strike'], label: 'Killing Machine' },
-  { buffName: 'Rime', spenderNames: ['Howling Blast'], label: 'Rime' },
+  // Howling Blast también consume Killing Machine en este servidor (no
+  // solo Obliterate/Frost Strike) — cuando coincide con Rime activo a la
+  // vez, es el combo grande: tiro gratis + crítico garantizado.
+  { buffId: SPELL.KILLING_MACHINE, spenderIds: [SPELL.OBLITERATE, SPELL.FROST_STRIKE, SPELL.HOWLING_BLAST], label: 'Killing Machine' },
+  { buffId: SPELL.FREEZING_FOG_RIME_PROC, spenderIds: [SPELL.HOWLING_BLAST], label: 'Rime' },
 ];
 
-const UA_NAME = 'Unbreakable Armor';
-const ERW_NAME = 'Empower Rune Weapon';
-const OBLITERATE_NAME = 'Obliterate';
-const HOWLING_BLAST_NAME = 'Howling Blast';
 // ERW casteado hasta 3s antes de que arranque la ventana de UA cuenta como
 // el mismo "burst" de cooldowns (orden de casteo puede variar por macro).
 const ERW_LOOKBACK_MS = 3000;
@@ -39,44 +75,62 @@ const ERW_LOOKBACK_MS = 3000;
 const OBLITERATE_TARGET_WITH_ERW = 6;
 const OBLITERATE_TARGET_NO_ERW = 5;
 
-const FLASK_NAMES = ['Flask of Endless Rage'];
-const POTION_NAMES = ['Speed', 'Indestructible Potion', 'Potion of Speed'];
 const PREPOT_WINDOW_MS = 60000; // una pot casteada hasta 60s antes del pull cuenta como prepot
 export const MAX_POTIONS_EXPECTED = 2; // prepot + 1 durante el intento (comparten cooldown)
 
+// Detecta Frost por presencia de spell IDs (no nombres) — inmune al
+// idioma del log. Un DK con Killing Machine, el proc de Rime, o
+// Unbreakable Armor en sus datos es Frost, sin importar cómo se llamen
+// esos hechizos en el idioma en que se grabó el log.
 export function isFrostDk(result) {
   if (!result || (result.raw.CLASS || '').toLowerCase() !== 'death-knight') return false;
-  const names = new Set(result.uptimes.map((u) => u.name));
-  result.spellCounts.forEach((s) => names.add(s.name));
-  return names.has('Killing Machine') || names.has('Rime') || names.has(UA_NAME);
+  const ids = new Set(result.spellCounts.map((s) => String(s.id)));
+  result.uptimes.forEach((u) => ids.add(String(u.id)));
+  return ids.has(SPELL.KILLING_MACHINE) || ids.has(SPELL.FREEZING_FOG_RIME_PROC) || ids.has(SPELL.UNBREAKABLE_ARMOR);
 }
 
 function pct(part, whole) {
   return whole > 0 ? (part / whole) * 100 : 0;
 }
 
-function castsOf(result, name) {
+function castsOf(result, spellId) {
   return result.timeline
-    .filter((t) => t.name === name)
+    .filter((t) => String(t.id) === spellId)
     .map((t) => t.ms)
     .sort((a, b) => a - b);
 }
 
-function intervalsOf(result, name) {
-  return (result.debugIntervalsByName && result.debugIntervalsByName[name]) || [];
+function intervalsOf(result, spellId) {
+  return (result.debugIntervalsById && result.debugIntervalsById[spellId]) || [];
+}
+
+// Nombre real (en el idioma del log) para mostrar en el panel — el
+// matching es por ID, pero al usuario le mostramos el texto tal cual lo
+// devuelve el sitio.
+function displayNameFor(result, spellId) {
+  const fromUptime = result.uptimes.find((u) => String(u.id) === spellId);
+  if (fromUptime) return fromUptime.name;
+  const fromCount = result.spellCounts.find((s) => String(s.id) === spellId);
+  return fromCount ? fromCount.name : `Spell #${spellId}`;
 }
 
 function analyzeProc(result, def) {
-  const intervals = intervalsOf(result, def.buffName);
+  const intervals = intervalsOf(result, def.buffId);
   if (!intervals.length) return null;
-  const spenderCasts = def.spenderNames.flatMap((n) => castsOf(result, n)).sort((a, b) => a - b);
+  const spenderCasts = def.spenderIds.flatMap((id) => castsOf(result, id)).sort((a, b) => a - b);
   let used = 0;
   const delays = [];
   intervals.forEach(([start, end]) => {
-    const cast = spenderCasts.find((ms) => ms >= start && ms <= end);
-    if (cast != null) {
+    // El casteo que REALMENTE consume el proc es el que coincide con el
+    // FINAL del intervalo (ahí es cuando el juego saca el buff) — no
+    // cualquiera que caiga en el medio. Si hay más de un casteo dentro de
+    // la ventana (pasa seguido en los datos reales), nos quedamos con el
+    // ÚLTIMO, no con el primero que encuentre .find().
+    const castsInWindow = spenderCasts.filter((ms) => ms >= start && ms <= end);
+    if (castsInWindow.length) {
       used += 1;
-      delays.push(cast - start);
+      const consumingCast = castsInWindow[castsInWindow.length - 1];
+      delays.push(consumingCast - start);
     }
   });
   return {
@@ -88,10 +142,10 @@ function analyzeProc(result, def) {
 }
 
 function analyzeUnbreakableArmor(result) {
-  const intervals = intervalsOf(result, UA_NAME);
+  const intervals = intervalsOf(result, SPELL.UNBREAKABLE_ARMOR);
   if (!intervals.length) return null;
-  const erwCasts = castsOf(result, ERW_NAME);
-  const obliterateCasts = castsOf(result, OBLITERATE_NAME);
+  const erwCasts = castsOf(result, SPELL.EMPOWER_RUNE_WEAPON);
+  const obliterateCasts = castsOf(result, SPELL.OBLITERATE);
   const windows = intervals.map(([start, end], i) => {
     const withErw = erwCasts.some((ms) => ms >= start - ERW_LOOKBACK_MS && ms <= end);
     const target = withErw ? OBLITERATE_TARGET_WITH_ERW : OBLITERATE_TARGET_NO_ERW;
@@ -102,21 +156,35 @@ function analyzeUnbreakableArmor(result) {
 }
 
 function analyzeHowlingBlast(result) {
-  const casts = castsOf(result, HOWLING_BLAST_NAME);
+  const casts = castsOf(result, SPELL.HOWLING_BLAST);
   if (!casts.length) return null;
-  const rimeIntervals = intervalsOf(result, 'Rime');
-  const rows = casts.map((ms) => ({ ms, withRime: rimeIntervals.some(([s, e]) => ms >= s && ms <= e) }));
-  return { casts: rows, goodCount: rows.filter((r) => r.withRime).length, total: rows.length };
+  const rimeIntervals = intervalsOf(result, SPELL.FREEZING_FOG_RIME_PROC);
+  const kmIntervals = intervalsOf(result, SPELL.KILLING_MACHINE);
+  const rows = casts.map((ms) => ({
+    ms,
+    withRime: rimeIntervals.some(([s, e]) => ms >= s && ms <= e),
+    withKillingMachine: kmIntervals.some(([s, e]) => ms >= s && ms <= e),
+  }));
+  return {
+    casts: rows,
+    goodCount: rows.filter((r) => r.withRime).length,
+    total: rows.length,
+    // El combo grande: Rime (tiro gratis) + Killing Machine (crítico
+    // garantizado) consumidos juntos en el mismo Howling Blast.
+    comboCount: rows.filter((r) => r.withRime && r.withKillingMachine).length,
+  };
 }
 
 function analyzeConsumables(result) {
-  const buffNames = new Set(Object.keys(result.debugIntervalsByName || {}));
-  const flaskUsed = FLASK_NAMES.some((n) => buffNames.has(n));
+  const flaskUsed = intervalsOf(result, SPELL.FLASK_OF_ENDLESS_RAGE).length > 0;
   const potionUses = [];
-  POTION_NAMES.forEach((name) => {
-    const intervals = intervalsOf(result, name);
-    intervals.forEach(([start]) => potionUses.push({ name, ms: start }));
-  });
+  intervalsOf(result, SPELL.SPEED_POTION).forEach(([start]) => potionUses.push({ name: displayNameFor(result, SPELL.SPEED_POTION), ms: start }));
+  // Indestructible Potion: todavía no tenemos el ID de su buff confirmado
+  // contra datos reales (no lo vimos usado en el log de prueba) — cae al
+  // matching por nombre en inglés como fallback, así que en un log en
+  // español puede no detectarse. Ver comentario junto a SPELL arriba.
+  const indestructibleIntervals = (result.debugIntervalsByName || {})['Indestructible Potion'] || [];
+  indestructibleIntervals.forEach(([start]) => potionUses.push({ name: 'Indestructible Potion', ms: start }));
   potionUses.sort((a, b) => a.ms - b.ms);
   const prepotOk = potionUses.length ? (potionUses[0].ms <= 0 && potionUses[0].ms >= -PREPOT_WINDOW_MS) : null;
   return { flaskUsed, potionUses, prepotOk };
@@ -125,7 +193,7 @@ function analyzeConsumables(result) {
 // Devuelve el análisis completo de Frost, o null si no aplica (no es DK, o
 // no hay suficientes datos como para armar ninguna categoría del puntaje).
 export function computeFrostAnalysis(result) {
-  const diseaseUptimes = result.uptimes.filter((u) => DISEASE_NAMES.includes(u.name));
+  const diseaseUptimes = result.uptimes.filter((u) => [SPELL.FROST_FEVER, SPELL.BLOOD_PLAGUE].includes(String(u.id)));
   const diseaseAvgPct = diseaseUptimes.length
     ? diseaseUptimes.reduce((s, u) => s + u.pct, 0) / diseaseUptimes.length
     : null;

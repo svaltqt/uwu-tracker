@@ -691,7 +691,11 @@
   .groster .dk-row-value { font-weight: 600; }
   .groster .dk-row-good .dk-row-icon, .groster .dk-row-good .dk-row-value { color: #3fb950; }
   .groster .dk-row-warn .dk-row-icon, .groster .dk-row-warn .dk-row-value { color: #e3b341; }
+  .groster .dk-row-bad .dk-row-icon, .groster .dk-row-bad .dk-row-value { color: #ff6b6b; }
   .groster .dk-row-info .dk-row-icon, .groster .dk-row-info .dk-row-value { color: var(--teal); }
+  .groster .dk-status-icon { display: inline-block; min-width: 14px; text-align: center; font-size: 14px; line-height: 1; }
+  .groster .dk-status-icon.is-ok { color: #3fb950; }
+  .groster .dk-status-icon.is-bad { color: #ff6b6b; }
   .groster .dk-row-label { color: var(--text-dim); }
 
   .groster .dk-analysis-note { margin-top: 8px; font-size: 11px; font-style: italic; }
@@ -741,18 +745,22 @@
     font-family: 'IBM Plex Mono', monospace;
     font-size: 11px;
   }
-  /* Time / Ability / Target fijos y angostos; Buffs se queda con lo que
-     sobra (importante: si esta columna queda muy angosta, los íconos de
-     buffs wrapean en muchas líneas y la fila se deforma en alto — por eso
-     los primeros 3 anchos se mantienen chicos a propósito). Esta tabla es
-     EXCLUSIVA de Death Knight — otras clases usan .lock-timeline-grid más
-     abajo, con su propio CSS, para no volver a pisarse nunca. */
+  /* Time / Ability / Target / Procs fijos y angostos; Buffs tiene su
+     propio ancho fijo también (antes se le dejaba "lo que sobra" del resto,
+     pero con table-layout: fixed y 5 columnas eso calculaba mal — mejor
+     todas explícitas). Esta tabla es EXCLUSIVA de Death Knight — otras
+     clases usan .lock-timeline-grid más abajo, con su propio CSS, para no
+     volver a pisarse nunca. */
   .groster .dk-analysis-timeline-table th:nth-child(1),
   .groster .dk-analysis-timeline-table td:nth-child(1) { width: 130px; }
   .groster .dk-analysis-timeline-table th:nth-child(2),
   .groster .dk-analysis-timeline-table td:nth-child(2) { width: 240px; }
   .groster .dk-analysis-timeline-table.has-dk-cols th:nth-child(3),
   .groster .dk-analysis-timeline-table.has-dk-cols td:nth-child(3) { width: 140px; }
+  .groster .dk-analysis-timeline-table.has-dk-cols th:nth-child(4),
+  .groster .dk-analysis-timeline-table.has-dk-cols td:nth-child(4) { width: 220px; }
+  .groster .dk-analysis-timeline-table.has-dk-cols th:nth-child(5),
+  .groster .dk-analysis-timeline-table.has-dk-cols td:nth-child(5) { width: 70px; }
   .groster .dk-analysis-timeline-table thead th {
     background: var(--panel-dark, var(--panel));
     color: var(--text-dim);
@@ -781,7 +789,9 @@
   .groster .dk-timeline-gap { color: #3fb950; font-size: 12px; }
   .groster .dk-timeline-spell { color: var(--text); white-space: normal; display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .groster .dk-timeline-dim { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 14px; }
-  .groster .dk-timeline-buffs { color: var(--text-dim); font-size: 10px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; overflow: hidden; min-width: 0; }
+  .groster .dk-timeline-buffs { color: var(--text-dim); font-size: 10px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+  .groster .dk-timeline-procs { color: var(--text-dim); font-size: 10px; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+  .groster .dk-timeline-procs img { outline: 1px solid #e3b341; outline-offset: -1px; border-radius: 3px; }
   .groster .dk-icon { border-radius: 3px; border: 1px solid var(--border); vertical-align: middle; flex-shrink: 0; }
   .groster .dk-analysis-error { color: var(--danger); }
   .groster .boss-log-cell {
@@ -1012,13 +1022,14 @@
 }
 .groster .lock-timeline-grid {
   display: grid;
-  /* Time/Ability/Target angostos a propósito — si Buffs (la última columna)
-     queda muy angosta, sus íconos wrapean en muchas líneas y la fila se
-     deforma en alto (mismo problema que tenía la tabla de DK). minmax()
-     le asegura un piso de espacio antes de necesitar scroll horizontal. */
-  grid-template-columns: 130px 240px 140px minmax(160px, 1fr);
+  /* Time/Ability/Target/Procs angostos a propósito — si Buffs (la más
+     ancha) queda muy angosta, sus íconos wrapean en muchas líneas y la
+     fila se deforma en alto (mismo problema que tenía la tabla de DK).
+     minmax() le asegura un piso de espacio antes de necesitar scroll
+     horizontal. Procs va al final, angosta (normalmente vacía). */
+  grid-template-columns: 130px 240px 140px minmax(160px, 1fr) 70px;
   font-family: 'IBM Plex Mono', monospace;
-  min-width: 670px;
+  min-width: 740px;
 }
 .groster .lock-timeline-head {
   background: var(--panel-dark, var(--panel));
@@ -1030,7 +1041,7 @@
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
-.groster .lock-timeline-head:nth-child(4) { border-right: none; }
+.groster .lock-timeline-head:nth-child(5) { border-right: none; }
 .groster .lock-timeline-cell {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
@@ -1039,15 +1050,18 @@
   min-width: 0;
   overflow: hidden;
 }
-.groster .lock-timeline-cell:nth-child(4n) { border-right: none; }
-/* Cebra: cada fila son 4 celdas seguidas (+ 4 headers antes); a partir de la
+.groster .lock-timeline-cell:nth-child(5n) { border-right: none; }
+/* Cebra: cada fila son 5 celdas seguidas (+ 5 headers antes); a partir de la
    2da fila de datos alternamos fondo. */
-.groster .lock-timeline-cell:nth-child(8n+9),
-.groster .lock-timeline-cell:nth-child(8n+10),
-.groster .lock-timeline-cell:nth-child(8n+11),
-.groster .lock-timeline-cell:nth-child(8n+12) { background: rgba(255, 255, 255, 0.02); }
+.groster .lock-timeline-cell:nth-child(10n+11),
+.groster .lock-timeline-cell:nth-child(10n+12),
+.groster .lock-timeline-cell:nth-child(10n+13),
+.groster .lock-timeline-cell:nth-child(10n+14),
+.groster .lock-timeline-cell:nth-child(10n+15) { background: rgba(255, 255, 255, 0.02); }
 .groster .lock-timeline-time { color: var(--text-dim); white-space: nowrap; font-weight: 500; }
 .groster .lock-timeline-gap { color: #3fb950; font-size: 12px; }
 .groster .lock-timeline-spell { color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .groster .lock-timeline-target { color: var(--text-dim); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .groster .lock-timeline-buffs { color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+.groster .lock-timeline-procs { color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+.groster .lock-timeline-procs img { outline: 1px solid #e3b341; outline-offset: -1px; border-radius: 3px; }

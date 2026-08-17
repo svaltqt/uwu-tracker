@@ -19,14 +19,53 @@ import json
 import os
 import re
 import sqlite3
+import sys
+import threading
+import webbrowser
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-WEB_DIR = Path(__file__).resolve().parent / "web"
+# --- Rutas de datos/recursos, conscientes de si estamos "congelados" -----
+# (empaquetados con PyInstaller) o corriendo como script normal ----------
+#
+# Frozen (.exe / binario standalone):
+#   - Los archivos estáticos (web/) viajan DENTRO del bundle, en una carpeta
+#     temporal que PyInstaller descomprime en cada arranque (sys._MEIPASS).
+#     Ahí no podemos escribir nada persistente.
+#   - La base de datos (roster histórico + caché) va en una carpeta de
+#     datos de usuario FUERA del bundle (AppData en Windows, Application
+#     Support en macOS, ~/.local/share en Linux). Así, cuando el usuario
+#     reemplaza el .exe por una versión nueva, la carpeta de datos ni se
+#     toca ni se sobreescribe — el roster guardado sobrevive al update.
+#
+# Script normal (`python3 proxy_server.py`, uso de desarrollo):
+#   - Todo se queda como estaba: web/ y data/ relativos a este archivo,
+#     igual que antes.
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", "")) if IS_FROZEN else Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _user_data_dir() -> Path:
+    """Carpeta persistente para datos de usuario, específica del SO."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
+        return Path(base) / "uwu-tracker"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "uwu-tracker"
+    base = os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
+    return Path(base) / "uwu-tracker"
+
+
+WEB_DIR = BUNDLE_DIR / "web"
+# Cuando corre "congelado", los datos van a la carpeta persistente del SO.
+# Cuando corre como script, se mantiene el comportamiento de siempre
+# (carpeta data/ al lado del .py) para no romper el flujo del CLI.
+DATA_DIR = _user_data_dir() if IS_FROZEN else (SCRIPT_DIR / "data")
 UWU_LOGS_BASE = os.environ.get("UWU_LOGS_BASE", "https://uwu-logs.xyz")
 PORT = int(os.environ.get("PORT", 8000))
 
@@ -35,7 +74,7 @@ PORT = int(os.environ.get("PORT", 8000))
 # cambia más — cachearlo evita pegarle a uwu-logs.xyz de nuevo cada vez que
 # se abre "View analysis" para el mismo intento. character/logs_list NO se
 # cachean porque esos sí cambian (rankings/dps se actualizan).
-DEFAULT_CACHE_DB_PATH = Path(__file__).resolve().parent / "data" / "analysis_cache.db"
+DEFAULT_CACHE_DB_PATH = DATA_DIR / "analysis_cache.db"
 CACHE_DB_PATH = Path(os.environ.get("ANALYSIS_CACHE_DB", str(DEFAULT_CACHE_DB_PATH)))
 CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS analysis_cache (
@@ -48,6 +87,27 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
     fetched_at TEXT NOT NULL
 );
 """
+
+
+def _migrate_legacy_data_dir_once() -> None:
+    """Si el usuario ya tenía data/uwu_logs.db al lado del ejecutable/script
+    (setup viejo, o alguien que copió su carpeta manualmente) y todavía no
+    existe nada en la carpeta persistente nueva, migra ese roster una sola
+    vez en vez de dejarlo empezar de cero. No pisa nada si el destino ya
+    tiene datos."""
+    if not IS_FROZEN:
+        return
+    legacy_dir = SCRIPT_DIR / "data"
+    for filename in ("uwu_logs.db", "analysis_cache.db"):
+        legacy_path = legacy_dir / filename
+        target_path = DATA_DIR / filename
+        if legacy_path.exists() and not target_path.exists():
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(legacy_path.read_bytes())
+            print(f"[migración] Copiado {legacy_path} -> {target_path}")
+
+
+_migrate_legacy_data_dir_once()
 
 
 def _init_cache_db() -> sqlite3.Connection:
@@ -65,7 +125,7 @@ CACHE_DB = _init_cache_db()
 # el MISMO archivo data/uwu_logs.db — así lo que guarda `uwu-tracker fetch`
 # desde la terminal y lo que guarda este proxy al refrescar el roster desde
 # la web terminan en la misma base y se complementan.
-DEFAULT_HISTORY_DB_PATH = Path(__file__).resolve().parent / "data" / "uwu_logs.db"
+DEFAULT_HISTORY_DB_PATH = DATA_DIR / "uwu_logs.db"
 HISTORY_DB_PATH = Path(os.environ.get("UWU_TRACKER_DB", str(DEFAULT_HISTORY_DB_PATH)))
 HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -197,6 +257,12 @@ DYNAMIC_ROUTE_RE = re.compile(r"^/api/(report_segments|report_casts)/(.+)$")
 # frontend la parsea para sacar mode/attempt/s/f de cada intento real.
 REPORT_PAGE_ROUTE_RE = re.compile(r"^/api/report_page/(.+)$")
 
+# /api/report_player_page/<report_id>/<player_name>?boss=...&mode=...&attempt=...&s=...&f=...
+# -> /reports/<report_id>/player/<player_name>/?...  (GET, HTML)
+# La tabla HTML de Damage sí incluye filas de mascotas (Ebon Gargoyle, ghoul
+# permanente y Army of the Dead), a diferencia de report_casts.
+REPORT_PLAYER_PAGE_ROUTE_RE = re.compile(r"^/api/report_player_page/([^/]+)/([^/]+)$")
+
 # Rutas cacheables (atadas a un report_id ya jugado, inmutables) vs. las que
 # no (rankings/dps que cambian con el tiempo).
 CACHEABLE_ROUTE_NAMES = {"report_segments", "report_casts"}
@@ -266,16 +332,30 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         self.send_error(404, "Ruta de proxy desconocida")
 
     def do_GET(self):
-        match = HISTORY_ROUTE_RE.match(self.path)
+        parsed = urlsplit(self.path)
+        path = parsed.path
+
+        match = HISTORY_ROUTE_RE.match(path)
         if match is not None:
             server, name, spec = (unquote(p) for p in match.groups())
             self._handle_get_history(server, name, spec)
             return
 
-        match = REPORT_PAGE_ROUTE_RE.match(self.path)
+        match = REPORT_PLAYER_PAGE_ROUTE_RE.match(path)
         if match is not None:
-            report_id = match.group(1)
-            self._proxy_html_get(f"/reports/{report_id}/", cacheable=True)
+            report_id, player_name = (unquote(p) for p in match.groups())
+            allowed = {"boss", "mode", "attempt", "s", "f"}
+            query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=False) if k in allowed]
+            upstream_path = f"/reports/{quote(report_id, safe='')}/player/{quote(player_name, safe='')}/"
+            if query:
+                upstream_path += "?" + urlencode(query)
+            self._proxy_html_get(upstream_path, cacheable=True)
+            return
+
+        match = REPORT_PAGE_ROUTE_RE.match(path)
+        if match is not None:
+            report_id = unquote(match.group(1))
+            self._proxy_html_get(f"/reports/{quote(report_id, safe='')}/", cacheable=True)
             return
         super().do_GET()
 
@@ -428,10 +508,23 @@ class ProxyHandler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    server = HTTPServer(("localhost", PORT), ProxyHandler)
-    print(f"Sirviendo dashboard + proxy en http://localhost:{PORT}")
+    try:
+        server = HTTPServer(("localhost", PORT), ProxyHandler)
+    except OSError as exc:
+        print(f"No se pudo levantar el servidor en el puerto {PORT}: {exc}")
+        print("¿Ya hay otra instancia de uwu-tracker corriendo? Cerrala e intentá de nuevo,")
+        print(f"o corré con la variable de entorno PORT=8001 (por ejemplo) para usar otro puerto.")
+        if IS_FROZEN:
+            input("Presioná Enter para cerrar...")
+        return
+    url = f"http://localhost:{PORT}"
+    print(f"Sirviendo dashboard + proxy en {url}")
     print(f"Reenviando /api/* -> {UWU_LOGS_BASE}")
-    print("Ctrl+C para parar")
+    print(f"Datos guardados en: {DATA_DIR}")
+    print("Ctrl+C para parar (o cerrá esta ventana)")
+    if IS_FROZEN:
+        # Le da un instante al server para levantar antes de abrir el navegador.
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

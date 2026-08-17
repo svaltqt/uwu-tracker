@@ -10,16 +10,51 @@
   // fuerza/haste relevantes en el momento exacto de usarlo.
   export const CLASS_ROTATION_CONFIG = {
     'death-knight': {
+      // rotationSpellIds/castCountSpellIds/*SpellId(s): fallback por spell
+      // ID, inmune al idioma del log (confirmado que uwu-logs.xyz devuelve
+      // los nombres en el idioma del cliente que grabó el log). Mismo
+      // orden/índice que su array de nombres. `null` = todavía no
+      // confirmado contra datos reales (no probar a ciegas con IDs de una
+      // wiki — ver nota larga en analysis/frost-dk.js sobre por qué).
+      // Confirmados así: Desolation, Bone Shield, Unholy Blight, Blood
+      // Plague, Frost Fever, Death and Decay, Horn of Winter, Unholy
+      // Presence, Hyperspeed Acceleration, Speed (potion), Blood Presence,
+      // Paragon, Greatness, Ghoul Frenzy, Summon Gargoyle, Blood Tap,
+      // Army of the Dead, Raise Dead, Empower Rune Weapon, Anti-Magic
+      // Shell, Unholy Might, Skyflare Swiftness, Black Magic, Bloodlust.
       rotationNames: ['Desolation', 'Ghoul Frenzy', 'Bone Shield', 'Unholy Blight', 'Blood Plague', 'Frost Fever', 'Death and Decay'],
+      rotationSpellIds: ['66803', '63560', '49222', '50536', '55078', '55095', '52212'],
+      // Procs consumibles: se muestran en la columna "Procs" del timeline,
+      // en la fila del casteo que los gasta (además de seguir apareciendo
+      // en "Buffs" mientras estén activos, como cualquier otro buff). Solo
+      // Frost por ahora (son los únicos confirmados contra datos reales —
+      // ver frost-dk.js).
+      procDefs: [
+        // Howling Blast también consume Killing Machine en este servidor
+        // (no solo Obliterate/Frost Strike) — si coincide con Rime activo
+        // a la vez, van los 2 íconos juntos en esa fila: el combo grande.
+        { label: 'Killing Machine', buffId: '51124', spenderIds: ['51425', '55268', '51411'] }, // Obliterate, Frost Strike, Howling Blast
+        { label: 'Rime', buffId: '59052', spenderIds: ['51411'] }, // el buff real se llama "Freezing Fog" en el log; Howling Blast
+      ],
       timelineBuffExclude: ['Blood Tap', 'Death and Decay', 'Ebon Plague', 'Blood Plague', 'Frost Fever'],
       castCountSpells: ['Horn of Winter'],
+      castCountSpellIds: ['57623'],
       macroSpamThreshold: 50,
       cooldownSnapshot: {
         sectionTitle: 'Gargoyle & Haste Snapshots',
         summonSpellName: 'Summon Gargoyle',
+        // summonSpellId: sin confirmar (no lo vimos en el log Frost de
+        // prueba — es exclusivo de Unholy). Cae a matching por nombre.
         uptimeNames: ['Summon Gargoyle', 'Paragon', 'Greatness'],
-        snapshotCheckNames: ['Unholy Presence', 'Hyperspeed Accelerators', 'Speed Potion', 'Berserking'],
+        uptimeSpellIds: [null, '67708', '60229'],
+        // Los nombres de acá abajo estaban mal escritos (typo, ni siquiera
+        // matcheaban en inglés): "Hyperspeed Accelerators" -> el buff real
+        // se llama "Hyperspeed Acceleration" (singular), y "Speed Potion"
+        // -> el buff real se llama solo "Speed". Corregidos + IDs.
+        snapshotCheckNames: ['Unholy Presence', 'Hyperspeed Acceleration', 'Speed', 'Berserking'],
+        snapshotCheckSpellIds: ['48265', '54758', '53908', null],
         followUpSpellName: 'Blood Presence',
+        followUpSpellId: '50475',
         followUpLabel: 'switched to Blood Presence',
         note: 'Gargoyle-specific damage: not calculated yet. The exact definition of what counts as a "snapshot" is still being fine-tuned.',
       },
@@ -47,6 +82,16 @@
     mage: {
       rotationNames: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
       timelineBuffExclude: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
+      // Hot Streak (48108): tu próximo Pyroblast es gratis e instantáneo.
+      // Confirmado contra datos reales — en este servidor el Pyroblast
+      // instantáneo NO tiene un spell ID separado del normal (a diferencia
+      // de Rime en DK); se distingue solo por tener Hot Streak activo al
+      // castearlo. Verificado cruzando el diagnóstico de Combustion: Hot
+      // Streak aparece en los buffs justo antes de cada Pyroblast, y
+      // desaparece en el casteo siguiente.
+      procDefs: [
+        { label: 'Hot Streak', buffId: '48108', spenderIds: ['42891'] }, // Pyroblast
+      ],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
