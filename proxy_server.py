@@ -247,8 +247,12 @@ PROXY_ROUTES = {
 DYNAMIC_PROXY_ROUTES = {
     "report_segments": "/reports/{report_id}/report_slices/",
     "report_casts": "/reports/{report_id}/casts/",
+    # Same endpoint used by uwu-logs' static/dps_chart.js for Show graph.
+    # With sec=1 it returns one-second DPS buckets for the selected player.
+    "report_dps": "/reports/{report_id}/get_dps",
 }
 DYNAMIC_ROUTE_RE = re.compile(r"^/api/(report_segments|report_casts)/(.+)$")
+REPORT_DPS_ROUTE_RE = re.compile(r"^/api/report_dps/([^/?]+)$")
 
 # /api/report_page/<report_id> -> /reports/<report_id>/  (GET, HTML)
 # El JSON de report_segments NO trae la dificultad (10N/10H/25N/25H) de cada
@@ -265,7 +269,7 @@ REPORT_PLAYER_PAGE_ROUTE_RE = re.compile(r"^/api/report_player_page/([^/]+)/([^/
 
 # Rutas cacheables (atadas a un report_id ya jugado, inmutables) vs. las que
 # no (rankings/dps que cambian con el tiempo).
-CACHEABLE_ROUTE_NAMES = {"report_segments", "report_casts"}
+CACHEABLE_ROUTE_NAMES = {"report_segments", "report_casts", "report_dps"}
 
 
 def _cache_key(upstream_path: str, body: bytes | None) -> str:
@@ -313,16 +317,34 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
     def do_POST(self):
-        if self.path == "/api/character":
+        # Always route on the URL path only. This avoids a query string or
+        # encoded browser URL making an otherwise valid API route miss its
+        # regex and fall through to the local 404 handler.
+        parsed = urlsplit(self.path)
+        path = parsed.path
+
+        if path == "/api/character":
             self._proxy_json("/character", cacheable=False, on_success=self._maybe_save_snapshot)
             return
 
-        upstream_path = PROXY_ROUTES.get(self.path)
+        upstream_path = PROXY_ROUTES.get(path)
         if upstream_path is not None:
             self._proxy_json(upstream_path, cacheable=False)
             return
 
-        match = DYNAMIC_ROUTE_RE.match(self.path)
+        # DPS Replay gets its own explicit route rather than sharing the
+        # generic report route matcher. The browser calls exactly one player
+        # series for the currently-open analyzer.
+        match = REPORT_DPS_ROUTE_RE.match(path)
+        if match is not None:
+            report_id = unquote(match.group(1))
+            upstream_path = DYNAMIC_PROXY_ROUTES["report_dps"].format(
+                report_id=quote(report_id, safe="-"),
+            )
+            self._proxy_json(upstream_path, cacheable=True)
+            return
+
+        match = DYNAMIC_ROUTE_RE.match(path)
         if match is not None:
             route_name, report_id = match.groups()
             upstream_path = DYNAMIC_PROXY_ROUTES[route_name].format(report_id=report_id)
@@ -355,7 +377,15 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         match = REPORT_PAGE_ROUTE_RE.match(path)
         if match is not None:
             report_id = unquote(match.group(1))
-            self._proxy_html_get(f"/reports/{quote(report_id, safe='')}/", cacheable=True)
+            # Preserve the encounter selector when requested. This lets the
+            # Raid Replay parse the report's player table for the exact fight,
+            # rather than the report's default/all-segments view.
+            allowed = {"boss", "mode", "attempt", "s", "f", "sc", "fc"}
+            query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=False) if k in allowed]
+            upstream_path = f"/reports/{quote(report_id, safe='')}/"
+            if query:
+                upstream_path += "?" + urlencode(query)
+            self._proxy_html_get(upstream_path, cacheable=True)
             return
         super().do_GET()
 
@@ -410,18 +440,46 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             cached = _cache_get(cache_key)
             if cached is not None:
                 status, content_type, response_body = cached
-                self.send_response(status)
-                self._cors_headers()
-                self.send_header("Content-Type", content_type)
-                self.send_header("X-Cache", "HIT")
-                self.end_headers()
-                self.wfile.write(response_body)
-                return
+                stale_empty_dps = False
+                if upstream_path.endswith("/get_dps"):
+                    try:
+                        stale_empty_dps = not bool(json.loads(response_body.decode("utf-8")))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        stale_empty_dps = True
+                if stale_empty_dps:
+                    CACHE_DB.execute("DELETE FROM analysis_cache WHERE cache_key = ?", (cache_key,))
+                    CACHE_DB.commit()
+                else:
+                    self.send_response(status)
+                    self._cors_headers()
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("X-Cache", "HIT")
+                    self.end_headers()
+                    self.wfile.write(response_body)
+                    return
+
+        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+        if upstream_path.endswith("/get_dps"):
+            # Match UwU Logs' in-page XHR more closely. The site's own
+            # dps_chart.js POSTs raw JSON from the player's report page, so
+            # keep the same origin/referer context for deployments that gate
+            # this internal route more strictly than the public pages.
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = {}
+            report_id = upstream_path.split("/reports/", 1)[1].split("/", 1)[0] if "/reports/" in upstream_path else ""
+            player_name = str(payload.get("player_name") or "")
+            headers.update({
+                "Accept": "*/*",
+                "Origin": UWU_LOGS_BASE,
+                "Referer": f"{UWU_LOGS_BASE}/reports/{quote(report_id, safe='')}/player/{quote(player_name, safe='')}/",
+            })
 
         req = Request(
             UWU_LOGS_BASE + upstream_path,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -442,7 +500,18 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         # Solo cacheamos respuestas 200 — un error/404 no queremos que quede
         # pegado para siempre si después el intento sí existe.
         if cache_key is not None and status == 200:
-            _cache_set(cache_key, upstream_path, body, status, "application/json", data)
+            should_cache = True
+            if upstream_path.endswith("/get_dps"):
+                try:
+                    parsed = json.loads(data.decode("utf-8"))
+                    # Do not persist an empty DPS response. It can be caused by
+                    # a transient/incorrect attempt lookup and would otherwise
+                    # poison Raid Replay forever for this exact request body.
+                    should_cache = bool(parsed)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    should_cache = False
+            if should_cache:
+                _cache_set(cache_key, upstream_path, body, status, "application/json", data)
 
         if on_success is not None and status == 200:
             on_success(body, data)

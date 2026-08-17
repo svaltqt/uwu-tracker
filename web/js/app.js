@@ -734,6 +734,7 @@ import {
   }
 
   const dkAnalysisCache = {}; // key: `${reportId}::${bossHtml}::${playerName}` -> resultado o error
+  const raidReplayCache = {}; // key: `${reportId}::${bossHtml}::${attempt}` -> synchronized 1-second DPS series
 
   // uwu-logs.xyz devuelve esta página de HTML (no JSON) cuando el sitio
   // está caído/reiniciando, con status 4xx/5xx igual — así que llega acá
@@ -854,6 +855,222 @@ import {
     return resp.json();
   }
 
+  async function fetchEncounterReportPage(reportId, bossHtml, attemptInfo) {
+    const info = typeof attemptInfo === 'object' && attemptInfo !== null ? attemptInfo : { attempt: attemptInfo };
+    const params = new URLSearchParams();
+    if (bossHtml != null) params.set('boss', bossHtml);
+    if (info.mode != null) params.set('mode', info.mode);
+    if (info.attempt != null) params.set('attempt', String(info.attempt));
+    if (info.s != null) params.set('s', String(info.s));
+    if (info.f != null) params.set('f', String(info.f));
+    const resp = await fetch(`/api/report_page/${encodeURIComponent(reportId)}?${params.toString()}`);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_page', resp.status, detail));
+    }
+    return resp.text();
+  }
+
+  function parseReportPlayers(html, reportId) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const players = [];
+    const seen = new Set();
+    const classBySlug = Object.entries(CLASS_MAP).reduce((acc, [classI, info]) => {
+      acc[info.name.toLowerCase().replace(/\s+/g, '-')] = { classI: Number(classI), color: info.color };
+      return acc;
+    }, {});
+    doc.querySelectorAll('a[href*="/player/"]').forEach((a) => {
+      const href = (a.getAttribute('href') || '').replace(/&amp;/g, '&');
+      const match = href.match(/\/reports\/([^/]+)\/player\/([^/?#]+)\/?/i);
+      if (!match || decodeURIComponent(match[1]) !== reportId) return;
+      const rawName = decodeURIComponent(match[2]);
+      // Overall report tables link real players by name. Pet/unit pages use
+      // GUIDs (0xF...), which must not become rows in the raid replay.
+      if (!rawName || /^0x[0-9a-f]+$/i.test(rawName)) return;
+      const key = rawName.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const classToken = [...a.classList].find((c) => classBySlug[c]);
+      const classMeta = classToken ? classBySlug[classToken] : null;
+      players.push({ name: rawName, classI: classMeta?.classI ?? null, color: classMeta?.color ?? null });
+    });
+    return players;
+  }
+
+  function parseReportPlayerNames(html, reportId) {
+    return parseReportPlayers(html, reportId).map((p) => p.name);
+  }
+
+  function getRosterPlayersForReport(reportId, bossName) {
+    const server = config.server || $('serverInput').value.trim();
+    const seen = new Set();
+    const out = [];
+    config.members.forEach((m) => {
+      const entry = dataCache[memberKey(server, m.name, m.spec)];
+      if (!entry || entry.status !== 'done' || !entry.data) return;
+      const bossData = findBossData(entry.data.bosses, bossName);
+      if (!bossData || bossData.report_id !== reportId) return;
+      const key = m.name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const cls = CLASS_MAP[entry.data.class_i];
+      const specInfo = getSpecInfo(entry.data.class_i, m.spec);
+      out.push({ name: m.name, classI: entry.data.class_i, color: cls ? cls.color : null, spec: Number(m.spec), role: specInfo.role });
+    });
+    return out;
+  }
+
+  async function fetchDpsSeries(reportId, bossHtml, attemptInfo, playerName, sec = 1) {
+    const info = typeof attemptInfo === 'object' && attemptInfo !== null ? attemptInfo : { attempt: attemptInfo };
+    // uwu-logs get_dps_wrap checks `if not attempt`; sending "0" (string)
+    // keeps attempt zero valid, while numeric 0 would be rejected upstream.
+    const body = {
+      boss: bossHtml,
+      attempt: String(info.attempt ?? 0),
+      player_name: playerName,
+      sec: String(sec),
+    };
+    if (info.mode != null) body.mode = info.mode;
+    if (info.s != null) body.s = info.s;
+    if (info.f != null) body.f = info.f;
+    const resp = await fetch(`/api/report_dps/${encodeURIComponent(reportId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(friendlyUpstreamError('report_dps', resp.status, detail));
+    }
+    return resp.json();
+  }
+
+  async function fetchDpsSeriesWithAttemptFallback(reportId, bossHtml, preferredAttempt, playerName, sec = 1) {
+    const candidates = [];
+    const seen = new Set();
+    const add = (info) => {
+      if (!info || info.attempt == null) return;
+      const key = String(info.attempt);
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(info);
+    };
+    add(preferredAttempt);
+
+    // The URL attempt normally matches ENCOUNTER_DATA's index, but older or
+    // unusual reports can disagree. Discover every attempt advertised by the
+    // report page and try those only when the preferred one returns no data.
+    try {
+      const allLinks = await fetchKillLinksFromReportPage(reportId);
+      allLinks.filter((l) => l.boss === bossHtml).forEach(add);
+    } catch (_) { /* preferred attempt is still enough for the normal path */ }
+
+    const errors = [];
+    for (const info of candidates) {
+      try {
+        const raw = await fetchDpsSeries(reportId, bossHtml, info, playerName, sec);
+        if (raw && typeof raw === 'object' && Object.keys(raw).length) {
+          return { raw, attempt: info };
+        }
+        errors.push(`attempt ${info.attempt}: empty series`);
+      } catch (err) {
+        errors.push(`attempt ${info.attempt}: ${err.message}`);
+      }
+    }
+    throw new Error(`${playerName}: ${errors.join('; ') || 'no valid attempts found'}`);
+  }
+
+  function replayTimeKeyToSecond(key) {
+    const m = String(key).match(/^(\d+):(\d+)$/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : Number(key) || 0;
+  }
+
+  function normalizeReplaySeries(raw) {
+    const points = {};
+    Object.entries(raw || {}).forEach(([k, v]) => {
+      points[replayTimeKeyToSecond(k)] = Number(v) || 0;
+    });
+    return points;
+  }
+
+  async function mapWithConcurrency(items, limit, mapper) {
+    const results = new Array(items.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const i = cursor++;
+        try { results[i] = await mapper(items[i], i); }
+        catch (error) { results[i] = { error, item: items[i] }; }
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  async function fetchRaidReplay(reportId, bossName, playerName) {
+    const bossHtml = bossNameToHtml(bossName);
+    const attempt = await findKillAttemptIndex(reportId, bossHtml, playerName);
+    if (!playerName) throw new Error('No player is selected for this replay');
+
+    // Keep network load bounded: up to 20 encounter players. Known healers
+    // are excluded using roster/spec metadata; players whose role is unknown
+    // are kept rather than risking false exclusions.
+    let reportPlayers = [];
+    try {
+      const reportHtml = await fetchEncounterReportPage(reportId, bossHtml, attempt);
+      reportPlayers = parseReportPlayers(reportHtml, reportId);
+    } catch (_) { /* roster fallback below */ }
+    if (!reportPlayers.length) {
+      reportPlayers = getRosterPlayersForReport(reportId, bossName);
+    }
+
+    const rosterPlayers = getRosterPlayersForReport(reportId, bossName);
+    const rosterByName = new Map(rosterPlayers.map((p) => [p.name.toLowerCase(), p]));
+    const selectedKey = String(playerName).toLowerCase();
+    const isKnownHealer = (name) => rosterByName.get(String(name).toLowerCase())?.role === 'Healing';
+    const reportNames = reportPlayers.map((p) => p.name).filter((name) => !isKnownHealer(name));
+    const candidates = [
+      ...(isKnownHealer(playerName) ? [] : [playerName]),
+      ...reportNames.filter((n) => String(n).toLowerCase() !== selectedKey),
+    ].filter((name, i, arr) => arr.findIndex((n) => n.toLowerCase() === name.toLowerCase()) === i).slice(0, 20);
+    if (!candidates.length) throw new Error('No DPS players were identified for this encounter');
+    const cacheKey = `${reportId}::${bossHtml}::${attempt.attempt}::top20dps::${candidates.map((n) => n.toLowerCase()).join(',')}`;
+    if (raidReplayCache[cacheKey]) return raidReplayCache[cacheKey];
+
+    const fetched = await mapWithConcurrency(candidates, 3, async (name) => {
+      const result = await fetchDpsSeriesWithAttemptFallback(reportId, bossHtml, attempt, name, 1);
+      const series = normalizeReplaySeries(result.raw);
+      if (!Object.keys(series).length) throw new Error(`${name}: empty DPS series`);
+      const maxSecond = Math.max(...Object.keys(series).map(Number));
+      const values = Array.from({ length: maxSecond + 1 }, (_, sec) => series[sec] || 0);
+      const cumulative = [];
+      let total = 0;
+      values.forEach((value, sec) => {
+        total += value;
+        cumulative[sec] = total;
+      });
+      const roster = rosterByName.get(name.toLowerCase());
+      const reportPlayer = reportPlayers.find((p) => p.name.toLowerCase() === name.toLowerCase());
+      return {
+        name, series, values, cumulative, maxSecond,
+        color: roster?.color || reportPlayer?.color || '#6f7683',
+        classI: roster?.classI ?? reportPlayer?.classI ?? null,
+        attempt: result.attempt,
+      };
+    });
+
+    const players = fetched.filter((r) => r && !r.error && r.values && r.values.length);
+    if (!players.length) {
+      const details = fetched.filter((r) => r?.error).slice(0, 3).map((r) => r.error.message).join(' | ');
+      throw new Error(`UwU Logs returned no DPS series for these players${details ? ` — ${details}` : ''}`);
+    }
+
+    const maxSecond = Math.max(...players.map((p) => p.maxSecond));
+    const result = { reportId, bossName, bossHtml, attempt, players, maxSecond, requestedPlayers: candidates.length };
+    raidReplayCache[cacheKey] = result;
+    return result;
+  }
+
   async function fetchPlayerDamagePage(reportId, bossHtml, attemptInfo, playerName) {
     const info = typeof attemptInfo === 'object' && attemptInfo !== null ? attemptInfo : { attempt: attemptInfo };
     const params = new URLSearchParams();
@@ -876,6 +1093,43 @@ import {
     return digits ? Number(digits) : 0;
   }
 
+
+  function parsePlayerDamageBreakdownHtml(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const rows = Array.from(doc.querySelectorAll('#dmg-done-main > table > tbody > tr'));
+    if (!rows.length) throw new Error('Damage table not found in player page');
+
+    const entries = rows.map((row) => {
+      const cells = Array.from(row.querySelectorAll(':scope > td'));
+      const spellAnchor = cells[0] && cells[0].querySelector('a[href*="/spell/"]');
+      const spellHref = spellAnchor ? (spellAnchor.getAttribute('href') || '') : '';
+      const spellIdMatch = spellHref.match(/\/spell\/(\d+)\/?/);
+      const spellId = spellIdMatch ? spellIdMatch[1] : null;
+      const name = (cells[0] && cells[0].textContent || '').replace(/\s+/g, ' ').trim();
+      const pctText = (cells[1] && cells[1].textContent || '').trim();
+      return {
+        name,
+        spellId,
+        pct: Number.parseFloat(pctText.replace(',', '.')) || 0,
+        damage: parseNumberCell(cells[2] && cells[2].textContent),
+        casts: parseNumberCell(cells[5] && cells[5].textContent),
+        other: parseNumberCell(cells[6] && cells[6].textContent),
+        directTotal: parseNumberCell(cells[7] && cells[7].textContent),
+        directHits: parseNumberCell(cells[8] && cells[8].textContent),
+        directCrits: parseNumberCell(cells[10] && cells[10].textContent),
+        periodicTotal: parseNumberCell(cells[13] && cells[13].textContent),
+        periodicHits: parseNumberCell(cells[14] && cells[14].textContent),
+        periodicCrits: parseNumberCell(cells[16] && cells[16].textContent),
+      };
+    }).filter((r) => r.name && r.damage > 0)
+      .sort((a, b) => b.damage - a.damage);
+
+    const totalDamageCell = doc.querySelector('#dmg-done-main > table > tfoot > tr > td:nth-child(3)');
+    const totalDamage = parseNumberCell(totalDamageCell && totalDamageCell.textContent)
+      || entries.reduce((sum, r) => sum + r.damage, 0);
+    return { totalDamage, entries };
+  }
+
   // La página HTML de Damage sí agrega el daño hecho por las mascotas del
   // jugador. Tomamos la columna Actual -> Amount y agrupamos las filas por
   // el nombre de la pet que UwU Logs agrega entre paréntesis.
@@ -886,9 +1140,14 @@ import {
 
     const spellRows = rows.map((row) => {
       const cells = Array.from(row.querySelectorAll(':scope > td'));
+      const spellAnchor = cells[0] && cells[0].querySelector('a[href*="/spell/"]');
+      const spellHref = spellAnchor ? (spellAnchor.getAttribute('href') || '') : '';
+      const spellIdMatch = spellHref.match(/\/spell\/(\d+)\/?/);
+      const spellId = spellIdMatch ? spellIdMatch[1] : null;
       const name = (cells[0] && cells[0].textContent || '').replace(/\s+/g, ' ').trim();
       return {
         name,
+        spellId,
         damage: parseNumberCell(cells[2] && cells[2].textContent),
         casts: parseNumberCell(cells[5] && cells[5].textContent),
         other: parseNumberCell(cells[6] && cells[6].textContent),
@@ -900,7 +1159,9 @@ import {
 
     const totalDamageCell = doc.querySelector('#dmg-done-main > table > tfoot > tr > td:nth-child(3)');
     const playerTotalDamage = parseNumberCell(totalDamageCell && totalDamageCell.textContent);
-    const gargoyleRows = spellRows.filter((r) => /\(Ebon Gargoyle\)/i.test(r.name));
+    // Language-independent: Gargoyle Strike is spell 51963 in WotLK logs.
+    // Keep the English-name fallback for old/synthetic pages without spell hrefs.
+    const gargoyleRows = spellRows.filter((r) => r.spellId === '51963');
     const armyRows = spellRows.filter((r) => /\(Army of the Dead Ghoul\)/i.test(r.name));
     // Prefer the name discovered from Raise Dead, but UwU Logs also exposes
     // the permanent ghoul directly in the Damage table as e.g. Melee (Ratgobbler).
@@ -932,10 +1193,16 @@ import {
     });
 
     const gargoyleUnitIds = Array.from(doc.querySelectorAll('#pets-dropdown a'))
-      .filter((a) => /Ebon Gargoyle/i.test(a.textContent || ''))
       .map((a) => {
-        const m = (a.getAttribute('href') || '').match(/\/player\/([^/]+)\/?/);
-        return m ? decodeURIComponent(m[1]) : null;
+        const href = a.getAttribute('href') || '';
+        const m = href.match(/\/player\/([^/]+)\/?/);
+        if (!m) return null;
+        const unitId = decodeURIComponent(m[1]);
+        const label = (a.textContent || '').trim();
+        // Ebon Gargoyle NPC id = 27829 = 0x6CB5. UwU unit GUIDs include
+        // that NPC id (e.g. 0xF130006CB5...), regardless of log language.
+        const isGargoyleGuid = /^0xF130006CB5/i.test(unitId);
+        return isGargoyleGuid ? unitId : null;
       })
       .filter(Boolean);
 
@@ -957,15 +1224,20 @@ import {
     const rows = Array.from(doc.querySelectorAll('#dmg-done-main > table > tbody > tr'));
     const spellRows = rows.map((row) => {
       const cells = Array.from(row.querySelectorAll(':scope > td'));
+      const spellAnchor = cells[0] && cells[0].querySelector('a[href*="/spell/"]');
+      const spellHref = spellAnchor ? (spellAnchor.getAttribute('href') || '') : '';
+      const spellIdMatch = spellHref.match(/\/spell\/(\d+)\/?/);
+      const spellId = spellIdMatch ? spellIdMatch[1] : null;
       const name = (cells[0] && cells[0].textContent || '').replace(/\s+/g, ' ').trim();
       return {
         name,
+        spellId,
         damage: parseNumberCell(cells[2] && cells[2].textContent),
         casts: parseNumberCell(cells[5] && cells[5].textContent),
         hits: parseNumberCell(cells[7] && cells[7].textContent),
       };
     }).filter((r) => r.name);
-    const gargoyleStrikeRows = spellRows.filter((r) => /Gargoyle Strike/i.test(r.name));
+    const gargoyleStrikeRows = spellRows.filter((r) => r.spellId === '51963');
     const selected = gargoyleStrikeRows.length ? gargoyleStrikeRows : spellRows;
     return {
       damage: selected.reduce((sum, r) => sum + r.damage, 0),
@@ -1133,8 +1405,8 @@ import {
         if (fightMs) {
           let category = 'other';
           const byId = (list) => Array.isArray(list) && list.includes(String(id));
-          if (rotationCfg.rotationNames.includes(name) || byId(rotationCfg.rotationSpellIds)) category = 'rotation';
-          else if (rotationCfg.cooldownSnapshot && (rotationCfg.cooldownSnapshot.uptimeNames.includes(name) || byId(rotationCfg.cooldownSnapshot.uptimeSpellIds))) category = 'gargoyle';
+          if (byId(rotationCfg.rotationSpellIds)) category = 'rotation';
+          else if (rotationCfg.cooldownSnapshot && byId(rotationCfg.cooldownSnapshot.uptimeSpellIds)) category = 'gargoyle';
           summary.uptimes.push({ id, name, pct: Math.min(100, (chosen.totalUp / fightMs) * 100), category });
         }
       });
@@ -1143,8 +1415,6 @@ import {
       // nombre no matchea (log en otro idioma) pero el ID sí, usamos esa
       // posición para no perder el orden fijo.
       const rotationRank = (u) => {
-        const byName = rotationCfg.rotationNames.indexOf(u.name);
-        if (byName !== -1) return byName;
         return Array.isArray(rotationCfg.rotationSpellIds) ? rotationCfg.rotationSpellIds.indexOf(String(u.id)) : -1;
       };
       summary.uptimes.sort((a, b) => {
@@ -1179,10 +1449,11 @@ import {
       // Buffs propios activos en el instante ms, usando los intervalos ya
       // armados arriba (self-sourced únicamente, igual que el resto del análisis).
       const procDefs = rotationCfg.procDefs || [];
-      const buffsActiveAt = (ms) => Object.keys(intervalsByName)
-        .filter((name) => !rotationCfg.timelineBuffExclude.includes(name))
-        .filter((name) => intervalsByName[name].some(([s, e]) => ms >= s && ms <= e))
-        .map((name) => ({ name, icon: iconByName[name] || null }));
+      const excludedBuffIds = new Set((rotationCfg.timelineBuffExcludeSpellIds || []).map(String));
+      const buffsActiveAt = (ms) => Object.keys(intervalsById)
+        .filter((id) => !excludedBuffIds.has(String(id)))
+        .filter((id) => intervalsById[id].some(([s, e]) => ms >= s && ms <= e))
+        .map((id) => ({ name: displayNameForId(id), icon: iconById[id] || null }));
       // Un proc se muestra en la fila del casteo que lo CONSUME (no en
       // cada fila donde el buff está activo): si este cast (por id) es un
       // "spender" del proc, el buff estaba activo en ese instante, Y este
@@ -1278,12 +1549,11 @@ import {
       // macro en vez de recastearlo solo cuando se cae el buff).
       // castCountSpellIds es el fallback por ID, inmune al idioma del log —
       // mismo orden que castCountSpells si está definido para esa clase.
-      rotationCfg.castCountSpells.forEach((name, i) => {
-        const fallbackId = rotationCfg.castCountSpellIds && rotationCfg.castCountSpellIds[i];
-        const times = castsBySpellName[name] || (fallbackId ? castsBySpellId[fallbackId] : null);
-        if (times && times.length) {
+      (rotationCfg.castCountSpellIds || []).forEach((spellId, i) => {
+        const times = castsBySpellId[String(spellId)] || [];
+        if (times.length) {
           summary.castNotes.push({
-            name: (fallbackId && !castsBySpellName[name] && castsBySpellId[fallbackId]) ? displayNameForId(fallbackId) : name,
+            name: displayNameForId(spellId),
             count: times.length,
             macroSpam: times.length >= rotationCfg.macroSpamThreshold,
           });
@@ -1299,19 +1569,15 @@ import {
       // datos reales (ver frost-dk.js para el porqué de esta precaución).
       const snap = rotationCfg.cooldownSnapshot;
       if (snap) {
-        const summonTimes = castsBySpellName[snap.summonSpellName] || (snap.summonSpellId && castsBySpellId[snap.summonSpellId]) || [];
+        const summonTimes = snap.summonSpellId ? (castsBySpellId[String(snap.summonSpellId)] || []) : [];
         if (summonTimes.length) {
-          const isActiveAt = (name, id, t) => {
-            if ((intervalsByName[name] || []).some(([s, e]) => t >= s && t <= e)) return true;
-            if (id && (intervalsById[id] || []).some(([s, e]) => t >= s && t <= e)) return true;
-            return false;
-          };
-          const followUpCasts = castsBySpellName[snap.followUpSpellName] || (snap.followUpSpellId && castsBySpellId[snap.followUpSpellId]) || [];
+          const isActiveAtId = (id, t) => id && (intervalsById[String(id)] || []).some(([s, e]) => t >= s && t <= e);
+          const followUpCasts = snap.followUpSpellId ? (castsBySpellId[String(snap.followUpSpellId)] || []) : [];
           summary.gargoyle = {
             uses: summonTimes.length,
             snapshots: summonTimes.map((t) => ({
               time: t,
-              active: snap.snapshotCheckNames.filter((name, i) => isActiveAt(name, snap.snapshotCheckSpellIds && snap.snapshotCheckSpellIds[i], t)),
+              active: (snap.snapshotCheckSpellIds || []).map((id, i) => ({ id, label: snap.snapshotCheckNames[i] })).filter((x) => isActiveAtId(x.id, t)).map((x) => x.label),
               bloodPresenceAfter: followUpCasts.some((bt) => bt > t && bt - t <= 3000),
             })),
           };
@@ -1814,10 +2080,230 @@ import {
     return candidates;
   }
 
-  // Engancha el toggle de tabs Summary/Timeline dentro de UN contenedor
-  // puntual (el panel completo, o UNA de las 2 columnas cuando se está
-  // comparando) — nunca sobre todo el documento, para que las 2 columnas
-  // del compare no se pisen los tabs entre sí.
+  function formatReplayClock(sec, precise = false) {
+    const value = Math.max(0, Number(sec) || 0);
+    const whole = Math.floor(value);
+    const base = `${String(Math.floor(whole / 60)).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}`;
+    return precise ? `${base}.${Math.floor((value - whole) * 10)}` : base;
+  }
+
+  function replayPlayerMetrics(player, maxSecond, position) {
+    const t = Math.max(0, Math.min(maxSecond, Number(position) || 0));
+    const lo = Math.floor(t);
+    const hi = Math.min(player.maxSecond, lo + 1);
+    const frac = t - lo;
+    const loIndex = Math.min(lo, player.maxSecond);
+    const baseDamage = Number(player.cumulative[loIndex] || 0);
+    const nextBucket = hi > loIndex ? Number(player.values[hi] || 0) : 0;
+    const damage = baseDamage + (nextBucket * frac);
+    const elapsed = Math.max(1, t + 1);
+    const avg = damage / elapsed;
+    return { name: player.name, color: player.color, damage, avg };
+  }
+
+  function renderRaidReplayFrame(root, replay, position) {
+    const pane = root.querySelector('[data-dkpane="replay"]');
+    if (!pane || !pane._replayState) return;
+    const state = pane._replayState;
+    const t = Math.max(0, Math.min(replay.maxSecond, Number(position) || 0));
+    state.second = t;
+
+    const rows = replay.players
+      .map((p) => replayPlayerMetrics(p, replay.maxSecond, t))
+      .sort((a, b) => b.avg - a.avg || b.damage - a.damage);
+
+    const timeEl = pane.querySelector('.raid-replay-time');
+    const slider = pane.querySelector('.raid-replay-slider');
+    const tbody = pane.querySelector('.raid-replay-table tbody');
+    if (timeEl) timeEl.textContent = `${formatReplayClock(t, true)} / ${formatReplayClock(replay.maxSecond)}`;
+    if (slider && document.activeElement !== slider) slider.value = String(t);
+    if (tbody) {
+      const maxDamage = Math.max(1, ...rows.map((m) => m.damage));
+      tbody.innerHTML = rows.map((m, i) => {
+        const barWidth = Math.max(0, Math.min(100, (m.damage / maxDamage) * 100));
+        const color = m.color || '#6f7683';
+        return `
+        <tr class="raid-replay-meter-row" style="--meter-color:${color};--meter-width:${barWidth.toFixed(2)}%;">
+          <td class="raid-replay-rank">${i + 1}</td>
+          <td class="raid-replay-player"><button type="button" class="raid-replay-player-link" data-replay-player="${m.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}" style="color:${color}">${m.name}</button></td>
+          <td>${Math.round(m.avg).toLocaleString('en-US')}</td>
+          <td>${Math.round(m.damage).toLocaleString('en-US')}</td>
+        </tr>`;
+      }).join('');
+    }
+    updateReplayDamageBreakdownFrame(pane, replay, t);
+  }
+
+  function updateReplayDamageBreakdownFrame(pane, replay, position) {
+    const selected = pane?._replaySelectedBreakdown;
+    if (!selected) return;
+    const player = replay.players.find((p) => p.name.toLowerCase() === selected.playerName.toLowerCase());
+    if (!player) return;
+    const metrics = replayPlayerMetrics(player, replay.maxSecond, position);
+    renderReplayDamageBreakdown(selected.panel, selected.playerName, selected.breakdown, selected.color, metrics.damage);
+  }
+
+  function stopRaidReplay(pane) {
+    if (!pane || !pane._replayState) return;
+    const state = pane._replayState;
+    if (state.raf) cancelAnimationFrame(state.raf);
+    state.raf = null;
+    state.lastFrameTs = null;
+    state.playing = false;
+    const play = pane.querySelector('.raid-replay-play');
+    if (play) play.textContent = '▶ PLAY';
+  }
+
+  function startRaidReplay(root, replay) {
+    const pane = root.querySelector('[data-dkpane="replay"]');
+    if (!pane || !pane._replayState) return;
+    const state = pane._replayState;
+    stopRaidReplay(pane);
+    if (state.second >= replay.maxSecond) state.second = 0;
+    state.playing = true;
+    state.lastFrameTs = null;
+    const play = pane.querySelector('.raid-replay-play');
+    if (play) play.textContent = '⏸ PAUSE';
+
+    const tick = (ts) => {
+      if (!state.playing) return;
+      if (state.lastFrameTs == null) state.lastFrameTs = ts;
+      const deltaSec = Math.min(0.25, Math.max(0, (ts - state.lastFrameTs) / 1000));
+      state.lastFrameTs = ts;
+      const speed = Number(pane.querySelector('.raid-replay-speed')?.value || 1);
+      const next = Math.min(replay.maxSecond, state.second + (deltaSec * speed));
+      renderRaidReplayFrame(root, replay, next);
+      if (next >= replay.maxSecond) {
+        stopRaidReplay(pane);
+        return;
+      }
+      state.raf = requestAnimationFrame(tick);
+    };
+    state.raf = requestAnimationFrame(tick);
+  }
+
+
+  function renderReplayDamageBreakdown(panel, playerName, breakdown, color, currentDamage = null) {
+    const entries = breakdown.entries || [];
+    const finalTotal = Math.max(0, Number(breakdown.totalDamage) || 0);
+    const liveTotal = currentDamage == null ? finalTotal : Math.max(0, Math.min(finalTotal || currentDamage, Number(currentDamage) || 0));
+    const progress = finalTotal > 0 ? Math.max(0, Math.min(1, liveTotal / finalTotal)) : 0;
+    const maxFinalAbility = Math.max(1, ...entries.map((r) => Number(r.damage) || 0));
+    panel.innerHTML = `
+      <div class="raid-replay-breakdown-head">
+        <div><strong style="color:${color || '#e9e5dc'}">${playerName}</strong> — Live damage breakdown</div>
+        <div>${Math.round(liveTotal).toLocaleString('en-US')} damage</div>
+      </div>
+      <div class="raid-replay-breakdown-wrap">
+        <table class="raid-replay-breakdown-table">
+          <thead><tr><th>Ability</th><th>Damage</th></tr></thead>
+          <tbody>${entries.map((r) => {
+            const liveDamage = (Number(r.damage) || 0) * progress;
+            const abilityBarWidth = Math.max(0, Math.min(100, ((Number(r.damage) || 0) / maxFinalAbility) * progress * 100));
+            return `<tr class="raid-replay-ability-row" style="--ability-meter-color:${color || '#6f7683'};--ability-meter-width:${abilityBarWidth.toFixed(2)}%;">
+              <td>${r.name}</td>
+              <td>${Math.round(liveDamage).toLocaleString('en-US')}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+      <div class="dk-analysis-note">Ability damage grows with the replay using the player's real accumulated damage as the clock. UwU Logs does not expose a per-ability DPS timeline, so intermediate ability values are proportional estimates; final values are exact.</div>`;
+  }
+
+  async function loadReplayPlayerBreakdown(pane, replay, playerName) {
+    const panel = pane.querySelector('.raid-replay-breakdown');
+    if (!panel) return;
+    pane._replayBreakdownCache ||= {};
+    const key = playerName.toLowerCase();
+    const player = replay.players.find((p) => p.name.toLowerCase() === key);
+    const color = player?.color || '#e9e5dc';
+    panel.innerHTML = `<div class="dk-analysis-summary">Loading ${playerName} damage breakdown…</div>`;
+    try {
+      let breakdown = pane._replayBreakdownCache[key];
+      if (!breakdown) {
+        const attemptInfo = player?.attempt || replay.attempt;
+        const html = await fetchPlayerDamagePage(replay.reportId, replay.bossHtml, attemptInfo, playerName);
+        breakdown = parsePlayerDamageBreakdownHtml(html);
+        pane._replayBreakdownCache[key] = breakdown;
+      }
+      pane._replaySelectedBreakdown = { panel, playerName, breakdown, color };
+      const metrics = player ? replayPlayerMetrics(player, replay.maxSecond, pane._replayState?.second || 0) : null;
+      renderReplayDamageBreakdown(panel, playerName, breakdown, color, metrics?.damage ?? null);
+    } catch (err) {
+      panel.innerHTML = `<div class="dk-analysis-error">Could not load ${playerName} damage breakdown: ${err.message}</div>`;
+    }
+  }
+
+  function wireRaidReplayControls(root, replay) {
+    const pane = root.querySelector('[data-dkpane="replay"]');
+    if (!pane) return;
+    pane._replayState = { second: 0, raf: null, lastFrameTs: null, playing: false };
+    pane._replayBreakdownCache = {};
+    pane._replaySelectedBreakdown = null;
+    const play = pane.querySelector('.raid-replay-play');
+    const reset = pane.querySelector('.raid-replay-reset');
+    const slider = pane.querySelector('.raid-replay-slider');
+
+    play?.addEventListener('click', () => {
+      if (pane._replayState.playing) stopRaidReplay(pane);
+      else startRaidReplay(root, replay);
+    });
+    reset?.addEventListener('click', () => {
+      stopRaidReplay(pane);
+      renderRaidReplayFrame(root, replay, 0);
+    });
+    slider?.addEventListener('input', () => {
+      stopRaidReplay(pane);
+      renderRaidReplayFrame(root, replay, Number(slider.value));
+    });
+    pane.addEventListener('click', (event) => {
+      const btn = event.target.closest('.raid-replay-player-link');
+      if (!btn || !pane.contains(btn)) return;
+      loadReplayPlayerBreakdown(pane, replay, btn.dataset.replayPlayer);
+    });
+    renderRaidReplayFrame(root, replay, 0);
+  }
+
+  async function ensureRaidReplayLoaded(root) {
+    const pane = root.querySelector('[data-dkpane="replay"]');
+    const panel = root.querySelector('.dk-analysis-panel[data-report-id]') || root.closest?.('.dk-analysis-panel[data-report-id]');
+    if (!pane || !panel || pane.dataset.loaded === '1' || pane.dataset.loading === '1') return;
+    pane.dataset.loading = '1';
+    pane.innerHTML = '<div class="dk-analysis-summary">Loading player DPS replay…</div>';
+    try {
+      const replay = await fetchRaidReplay(panel.dataset.reportId, panel.dataset.bossName, panel.dataset.playerName);
+      pane.dataset.loaded = '1';
+      pane.innerHTML = `
+        <div class="raid-replay-toolbar">
+          <button type="button" class="raid-replay-play">▶ PLAY</button>
+          <button type="button" class="secondary raid-replay-reset">⏮ RESET</button>
+          <label>Speed
+            <select class="raid-replay-speed">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+            </select>
+          </label>
+          <span class="raid-replay-time">00:00 / ${formatReplayClock(replay.maxSecond)}</span>
+        </div>
+        <input class="raid-replay-slider" type="range" min="0" max="${replay.maxSecond}" value="0" step="0.1">
+        <div class="raid-replay-table-wrap">
+          <table class="raid-replay-table">
+            <thead><tr><th>#</th><th>Player</th><th>Avg DPS</th><th>Damage</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="raid-replay-breakdown"><div class="dk-analysis-note">Click a player name to show that player's ability and melee damage breakdown for this encounter.</div></div>
+        <div class="dk-analysis-note">Raid Replay loads up to 20 players and excludes known Healing specs using roster/spec metadata. Players whose role cannot be identified are kept to avoid false exclusions. Ranking updates by accumulated average DPS. UwU Logs provides real 1-second DPS buckets; playback is visually interpolated for smoother motion.</div>`;
+      wireRaidReplayControls(root, replay);
+    } catch (err) {
+      pane.innerHTML = `<div class="dk-analysis-error">Could not load DPS Replay: ${err.message}</div>`;
+    } finally {
+      pane.dataset.loading = '0';
+    }
+  }
+
+  // Tabs Summary / Timeline / Raid Replay inside one analysis panel.
   function wireAnalysisTabs(root) {
     root.querySelectorAll('.dk-tab').forEach((tabBtn) => {
       tabBtn.addEventListener('click', () => {
@@ -1825,6 +2311,9 @@ import {
         root.querySelectorAll('.dk-tab-pane').forEach((pane) => {
           pane.style.display = pane.dataset.dkpane === tabBtn.dataset.dktab ? '' : 'none';
         });
+        const replayPane = root.querySelector('[data-dkpane="replay"]');
+        if (tabBtn.dataset.dktab === 'replay') ensureRaidReplayLoaded(root);
+        else stopRaidReplay(replayPane);
       });
     });
   }
@@ -1834,7 +2323,7 @@ import {
   // un solo jugador como para cada columna del compare — nunca toca el DOM
   // directamente, solo devuelve el string.
   function buildAnalysisPanelHtml(result, info) {
-    const { playerName, bossName, dps, duration } = info;
+    const { reportId, playerName, bossName, dps, duration } = info;
     const isDkClass = (result.raw.CLASS || '').toLowerCase() === 'death-knight';
     const rotationUptimes = result.uptimes.filter((u) => u.category === 'rotation');
     const gargoyleUptimes = result.uptimes.filter((u) => u.category === 'gargoyle');
@@ -1934,10 +2423,6 @@ import {
     const rimeRow = frost && frost.rime
       ? checkRow('Rime procs used', `${frost.rime.used} of ${frost.rime.total}`, frost.rime.used === frost.rime.total)
       : '';
-    const rpOvercapRow = frost
-      ? infoRow('Runic Power over-capping', 'not tracked yet (needs RP state, not exposed by the API)')
-      : '';
-
     // --- Unholy DK: Summary layout ---
     const pctMetricRow = (label, value) => value == null
       ? infoRow(label, 'not detected / unavailable')
@@ -1951,6 +2436,7 @@ import {
          <div class="dk-analysis-spells">
            ${pctMetricRow('Death and Decay uptime', unholy.deathAndDecayPct)}
            ${pctMetricRow('Desolation uptime', unholy.desolationPct)}
+           ${pctMetricRow('Ghoul Frenzy uptime', unholy.ghoulFrenzyPct)}
            ${pctMetricRow('Sigil of Virulence uptime', unholy.sigilOfVirulencePct)}
            ${pctMetricRow('Unholy Might (T9 2p) uptime', unholy.unholyMightT9Pct)}
            ${unholy.meleePct != null ? pctMetricRow('Melee uptime', unholy.meleePct) : infoRow('Melee uptime', 'not tracked yet (report_casts does not expose swing uptime)')}
@@ -1969,7 +2455,6 @@ import {
            <div class="dk-analysis-spells">
              ${uaRows}
              ${howlingBlastRow}
-             ${rpOvercapRow}
              ${rimeRow}
              ${rotationUptimes.map(uptimeRow).join('')}${castNoteRows}
            </div>
@@ -2109,7 +2594,10 @@ import {
 
 
     const consumableRows = frost && frost.consumables
-      ? checkRow('Flask of Endless Rage', boolValue(frost.consumables.flaskUsed), frost.consumables.flaskUsed)
+      ? checkRow('You used Hyperspeed Accelerators', `${frost.consumables.hyperspeed.used} of ${frost.consumables.hyperspeed.possible} possible times`, frost.consumables.hyperspeed.used >= frost.consumables.hyperspeed.possible)
+        + checkRow('You used Global Thermal Sapper Charge', `${frost.consumables.globalThermalSapperCharge.used} of ${frost.consumables.globalThermalSapperCharge.possible} possible times`, frost.consumables.globalThermalSapperCharge.used >= frost.consumables.globalThermalSapperCharge.possible)
+        + checkRow('You used Saronite Bomb', `${frost.consumables.saroniteBomb.used} of ${frost.consumables.saroniteBomb.possible} possible times`, frost.consumables.saroniteBomb.used >= frost.consumables.saroniteBomb.possible)
+        + checkRow('You had a Flask of Endless Rage', boolValue(frost.consumables.flaskUsed), frost.consumables.flaskUsed)
         + checkRow('Potions used (Speed / Indestructible)', `${frost.consumables.potionUses.length} of ${MAX_POTIONS_EXPECTED}`, frost.consumables.potionUses.length >= MAX_POTIONS_EXPECTED)
         + (frost.consumables.prepotOk != null ? checkRow('First potion was a pre-pot (≤60s before pull)', boolValue(frost.consumables.prepotOk), frost.consumables.prepotOk) : '')
       : '';
@@ -2223,14 +2711,16 @@ import {
       </div>`;
 
     return `
-      <div class="dk-analysis-panel">
+      <div class="dk-analysis-panel" data-report-id="${reportId || ''}" data-boss-name="${String(bossName || '').replace(/"/g, '&quot;')}" data-player-name="${String(playerName || result.raw.NAME || '').replace(/"/g, '&quot;')}">
         <div class="dk-analysis-warning">⚠ Experimental — undocumented uwu-logs.xyz endpoints. GCD delay is approximate; everything else is calculated from the real response, filtered by source (only your own buffs/debuffs).</div>
         <div class="dk-tabs">
           <button type="button" class="dk-tab active" data-dktab="resumen">Summary</button>
           <button type="button" class="dk-tab" data-dktab="timeline">Timeline</button>
+          <button type="button" class="dk-tab" data-dktab="replay">Raid Replay</button>
         </div>
         <div class="dk-tab-pane" data-dkpane="resumen">${summaryTabHtml}</div>
         <div class="dk-tab-pane" data-dkpane="timeline" style="display:none;">${timelineTabHtml}</div>
+        <div class="dk-tab-pane" data-dkpane="replay" style="display:none;"><div class="dk-analysis-summary">Open this tab to load the raid DPS replay.</div></div>
       </div>`;
   }
 
@@ -2243,7 +2733,7 @@ import {
       if (result.parseError) {
         return `<div class="dk-analysis-panel"><div class="dk-analysis-error">Couldn't parse the site's response (unexpected format): ${result.parseError}. Check the browser console (F12 → Console tab) — the full response is there.</div></div>`;
       }
-      return buildAnalysisPanelHtml(result, { playerName, bossName, dps, duration });
+      return buildAnalysisPanelHtml(result, { reportId, playerName, bossName, dps, duration });
     } catch (err) {
       return `<div class="dk-analysis-panel"><div class="dk-analysis-error">Could not fetch the analysis: ${err.message}. Make sure you're running <code>proxy_server.py</code> (this isn't the public API, it needs the proxy).</div></div>`;
     }
@@ -2300,26 +2790,21 @@ import {
       // Nombres de interés para el diagnóstico: los de la config de la clase
       // detectada (rotación + cast-count + cooldown snapshot), no una lista
       // fija de DK — así el log sirve para cualquier clase soportada.
-      const suspectNames = [
-        ...rotationCfg.rotationNames,
-        ...rotationCfg.castCountSpells,
-        ...(rotationCfg.cooldownSnapshot ? [rotationCfg.cooldownSnapshot.summonSpellName] : []),
-        'Combustion', // debug puntual: reportado que no aparece en Buffs para Mago
-      ];
-      // Para el sample completo: "1" (Melee, universal) + los IDs reales que
-      // matcheen esos nombres de interés + el primer ID que haya en la data
-      // + los 5 hechizos con más eventos totales (así aparecen solos los que
-      // más casteás aunque no estén en la lista de rotación, ej. Shadow Bolt).
-      const idsByName = {};
-      Object.keys(dataObj).forEach((id) => {
-        const name = spellsObj[id] && spellsObj[id].name;
-        if (name) idsByName[name] = id;
-      });
+      const suspectIds = [
+        ...(rotationCfg.rotationSpellIds || []),
+        ...(rotationCfg.castCountSpellIds || []),
+        ...(rotationCfg.cooldownSnapshot && rotationCfg.cooldownSnapshot.summonSpellId ? [rotationCfg.cooldownSnapshot.summonSpellId] : []),
+        '11129', // Combustion — diagnóstico, también por SpellID.
+      ].map(String);
+      // Para el sample completo: "1" (Melee, universal) + IDs de interés
+      // configurados + el primer ID + los 5 hechizos con más eventos.
+      // Los nombres se usan solo al imprimir el diagnóstico.
+
       const topByEvents = Object.keys(dataObj)
         .filter((id) => Array.isArray(dataObj[id]))
         .sort((a, b) => dataObj[b].length - dataObj[a].length)
         .slice(0, 5);
-      const sampleIds = ['1', ...suspectNames.map((n) => idsByName[n]).filter(Boolean), ...topByEvents, Object.keys(dataObj)[0]]
+      const sampleIds = ['1', ...suspectIds, ...topByEvents, Object.keys(dataObj)[0]]
         .filter((id, i, arr) => id && arr.indexOf(id) === i);
       const sample = {
         FLAGS: raw.FLAGS,
@@ -2344,8 +2829,8 @@ import {
       const suspectDebug = {};
       const selfName = raw.NAME;
       Object.keys(dataObj).forEach((id) => {
-        const spellName = (spellsObj[id] && spellsObj[id].name) || null;
-        if (!spellName || !suspectNames.includes(spellName)) return;
+        const spellName = (spellsObj[id] && spellsObj[id].name) || `Spell #${id}`;
+        if (!suspectIds.includes(String(id))) return;
         const events = Array.isArray(dataObj[id]) ? dataObj[id] : [];
         const sourceCounts = {};
         events.forEach((ev) => {
@@ -2415,8 +2900,8 @@ import {
       // casteos (de cualquier hechizo) cayeron cerca (para ver si hay algún
       // cast tuyo DENTRO de esa ventana, o si de verdad no casteaste nada
       // en esos segundos exactos).
-      if (result.debugIntervalsByName && result.debugIntervalsByName['Combustion']) {
-        const combustionIntervals = result.debugIntervalsByName['Combustion'];
+      if (result.debugIntervalsById && result.debugIntervalsById['11129']) {
+        const combustionIntervals = result.debugIntervalsById['11129'];
         const nearbyDebug = combustionIntervals.map(([s, e]) => ({
           interval: [formatTimelineMs(s), formatTimelineMs(e)],
           casts_in_window: (result.timeline || [])
@@ -2436,7 +2921,7 @@ import {
         const className = classIEntry ? classIEntry[1].name : 'class';
         const candidates = classI != null ? getCompareCandidates(classI, bossName, playerName || result.raw.NAME) : [];
 
-        const panelHtml = buildAnalysisPanelHtml(result, { playerName, bossName, dps, duration });
+        const panelHtml = buildAnalysisPanelHtml(result, { reportId, playerName, bossName, dps, duration });
 
         body.innerHTML = `
           <div class="compare-toolbar">

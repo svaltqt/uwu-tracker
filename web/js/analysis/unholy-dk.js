@@ -397,6 +397,7 @@ export function computeUnholyAnalysis(result) {
     diseaseUptimes,
     deathAndDecayPct: deathAndDecayUptimePct(result),
     desolationPct: uptimePctFor(result, SPELL.DESOLATION),
+    ghoulFrenzyPct: uptimePctFor(result, SPELL.GHOUL_FRENZY),
     boneShieldPct: boneShieldUptimePct(result),
     unholyMightT9Pct: uptimePctFor(result, SPELL.UNHOLY_MIGHT_T9),
     fallenCrusaderPct: uptimePctFor(result, SPELL.FALLEN_CRUSADER),

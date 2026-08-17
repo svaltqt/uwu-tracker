@@ -23,7 +23,7 @@
       // Army of the Dead, Raise Dead, Empower Rune Weapon, Anti-Magic
       // Shell, Unholy Might, Skyflare Swiftness, Black Magic, Bloodlust.
       rotationNames: ['Desolation', 'Ghoul Frenzy', 'Bone Shield', 'Unholy Blight', 'Blood Plague', 'Frost Fever', 'Death and Decay'],
-      rotationSpellIds: ['66803', '63560', '49222', '50536', '55078', '55095', '52212'],
+      rotationSpellIds: ['66803', '63560', '49222', '50536', '55078', '55095', '52212', '49938'],
       // Procs consumibles: se muestran en la columna "Procs" del timeline,
       // en la fila del casteo que los gasta (además de seguir apareciendo
       // en "Buffs" mientras estén activos, como cualquier otro buff). Solo
@@ -37,16 +37,16 @@
         { label: 'Rime', buffId: '59052', spenderIds: ['51411'] }, // el buff real se llama "Freezing Fog" en el log; Howling Blast
       ],
       timelineBuffExclude: ['Blood Tap', 'Death and Decay', 'Ebon Plague', 'Blood Plague', 'Frost Fever'],
+      timelineBuffExcludeSpellIds: ['45529', '49938', '52212', '51735', '55078', '55095'],
       castCountSpells: ['Horn of Winter'],
       castCountSpellIds: ['57623'],
       macroSpamThreshold: 50,
       cooldownSnapshot: {
         sectionTitle: 'Gargoyle & Haste Snapshots',
         summonSpellName: 'Summon Gargoyle',
-        // summonSpellId: sin confirmar (no lo vimos en el log Frost de
-        // prueba — es exclusivo de Unholy). Cae a matching por nombre.
+        summonSpellId: '49206',
         uptimeNames: ['Summon Gargoyle', 'Paragon', 'Greatness'],
-        uptimeSpellIds: [null, '67708', '60229'],
+        uptimeSpellIds: ['49206', '67708', '67773', '60229'],
         // Los nombres de acá abajo estaban mal escritos (typo, ni siquiera
         // matcheaban en inglés): "Hyperspeed Accelerators" -> el buff real
         // se llama "Hyperspeed Acceleration" (singular), y "Speed Potion"
@@ -65,8 +65,10 @@
     // cooldown único equivalente a la Gárgola entre las 3 specs, así que esa
     // sección queda afuera para Warlock.
     warlock: {
-      rotationNames: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
-      timelineBuffExclude: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Bane of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
+      rotationNames: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
+      rotationSpellIds: ['47813', '47843', '47864', '47867', '47811', '47960', '48181'],
+      timelineBuffExclude: ['Corruption', 'Unstable Affliction', 'Curse of Agony', 'Curse of Doom', 'Immolate', 'Shadowflame', 'Haunt'],
+      timelineBuffExcludeSpellIds: ['47813', '47843', '47864', '47867', '47811', '47960', '48181'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -81,7 +83,9 @@
     // queda afuera para Mago también.
     mage: {
       rotationNames: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
+      rotationSpellIds: ['55360', '12579', '31589', '12654'],
       timelineBuffExclude: ['Living Bomb', "Winter's Chill", 'Slow', 'Ignite'],
+      timelineBuffExcludeSpellIds: ['55360', '12579', '31589', '12654'],
       // Hot Streak (48108): tu próximo Pyroblast es gratis e instantáneo.
       // Confirmado contra datos reales — en este servidor el Pyroblast
       // instantáneo NO tiene un spell ID separado del normal (a diferencia
@@ -106,7 +110,9 @@
     // Armas), así que esa sección queda afuera.
     warrior: {
       rotationNames: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
+      rotationSpellIds: ['47465', '12721', '47502', '47437', '47467'],
       timelineBuffExclude: ['Rend', 'Deep Wounds', 'Thunder Clap', 'Demoralizing Shout', 'Sunder Armor'],
+      timelineBuffExcludeSpellIds: ['47465', '12721', '47502', '47437', '47467'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -122,7 +128,9 @@
     // de Combate, Shadowstep de Sutileza), así que esa sección queda afuera.
     rogue: {
       rotationNames: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
+      rotationSpellIds: ['6774', '48672', '48676', '57970', '48669', '51662'],
       timelineBuffExclude: ['Slice and Dice', 'Rupture', 'Garrote', 'Deadly Poison', 'Expose Armor', 'Hunger for Blood'],
+      timelineBuffExcludeSpellIds: ['6774', '48672', '48676', '57970', '48669', '51662'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -138,7 +146,9 @@
     // esa sección queda afuera.
     hunter: {
       rotationNames: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
+      rotationSpellIds: ['49001', '63672', '53338', '63468', '3045', '19574'],
       timelineBuffExclude: ['Serpent Sting', 'Black Arrow', "Hunter's Mark", 'Piercing Shots', 'Rapid Fire', 'Bestial Wrath'],
+      timelineBuffExcludeSpellIds: ['49001', '63672', '53338', '63468', '3045', '19574'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -153,8 +163,10 @@
     // No hay un cooldown único equivalente a la Gárgola entre las 3 specs,
     // así que esa sección queda afuera.
     paladin: {
-      rotationNames: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
-      timelineBuffExclude: ['Judgement of Wisdom', 'Judgement of Light', 'Judgement of Command', 'Consecration', 'Avenging Wrath'],
+      rotationNames: ['Judgement of Wisdom', 'Judgement of Light', 'Consecration', 'Avenging Wrath'],
+      rotationSpellIds: ['20186', '20185', '48819', '31884'],
+      timelineBuffExclude: ['Judgement of Wisdom', 'Judgement of Light', 'Consecration', 'Avenging Wrath'],
+      timelineBuffExcludeSpellIds: ['20186', '20185', '48819', '31884'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -169,8 +181,10 @@
     // Gárgola compartido entre Balance/Feral/Restoration, así que esa
     // sección queda afuera.
     druid: {
-      rotationNames: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
+      rotationNames: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle (Cat)', 'Mangle (Bear)', 'Lacerate', 'Faerie Fire', 'Faerie Fire (Feral)', 'Savage Roar'],
+      rotationSpellIds: ['48463', '48468', '49800', '48574', '48566', '48564', '48568', '770', '16857', '52610'],
       timelineBuffExclude: ['Moonfire', 'Insect Swarm', 'Rip', 'Rake', 'Mangle', 'Lacerate', 'Faerie Fire', 'Savage Roar'],
+      timelineBuffExcludeSpellIds: ['48463', '48468', '49800', '48574', '48566', '48564', '48568', '770', '16857', '52610'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -182,7 +196,9 @@
     // los 3 DoTs principales de esa spec. No hay cooldown único a snapshotear.
     priest: {
       rotationNames: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
+      rotationSpellIds: ['48125', '48160', '48300'],
       timelineBuffExclude: ['Shadow Word: Pain', 'Vampiric Touch', 'Devouring Plague'],
+      timelineBuffExcludeSpellIds: ['48125', '48160', '48300'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
@@ -193,10 +209,12 @@
     // score de daño. No hay cooldown único compartido entre las 3 specs.
     shaman: {
       rotationNames: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
+      rotationSpellIds: ['49233', '17364', '58799'],
       timelineBuffExclude: ['Flame Shock', 'Stormstrike', 'Frostbrand Attack'],
+      timelineBuffExcludeSpellIds: ['49233', '17364', '58799'],
       castCountSpells: [],
       macroSpamThreshold: 50,
       cooldownSnapshot: null,
     },
   };
-  export const DEFAULT_ROTATION_CONFIG = { rotationNames: [], timelineBuffExclude: [], castCountSpells: [], macroSpamThreshold: 50, cooldownSnapshot: null };
+  export const DEFAULT_ROTATION_CONFIG = { rotationNames: [], rotationSpellIds: [], timelineBuffExclude: [], timelineBuffExcludeSpellIds: [], castCountSpells: [], castCountSpellIds: [], macroSpamThreshold: 50, cooldownSnapshot: null };

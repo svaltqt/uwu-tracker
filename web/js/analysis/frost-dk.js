@@ -49,10 +49,12 @@ const SPELL = {
   HOWLING_BLAST: '51411',
   // Buff de Potion of Speed — confirmado contra datos reales (nombre real: "Speed").
   SPEED_POTION: '53908',
-  // No confirmado contra datos reales de este servidor (no apareció en el
-  // log de prueba) — sacado de wowhead/wotlkdb/wowclassicdb, que
-  // coinciden entre sí. Si falla, revisar acá primero.
-  FLASK_OF_ENDLESS_RAGE: '53903',
+  HYPERSPEED_ACCELERATION: '54758',
+  SARONITE_BOMB: '56350',
+  GLOBAL_THERMAL_SAPPER_CHARGE: '56488',
+  // Aura real observada en UwU Logs. 53903 es la receta, no el buff.
+  FLASK_OF_ENDLESS_RAGE: '53760',
+  INDESTRUCTIBLE_POTION: '53720',
 };
 
 const DISEASE_UPTIME_TARGET = 95; // % — debajo de esto la categoría empieza a perder puntos
@@ -76,6 +78,7 @@ const OBLITERATE_TARGET_WITH_ERW = 6;
 const OBLITERATE_TARGET_NO_ERW = 5;
 
 const PREPOT_WINDOW_MS = 60000; // una pot casteada hasta 60s antes del pull cuenta como prepot
+const GLOBAL_THERMAL_SAPPER_COOLDOWN_MS = 300000;
 export const MAX_POTIONS_EXPECTED = 2; // prepot + 1 durante el intento (comparten cooldown)
 
 // Detecta Frost por presencia de spell IDs (no nombres) — inmune al
@@ -176,18 +179,38 @@ function analyzeHowlingBlast(result) {
 }
 
 function analyzeConsumables(result) {
-  const flaskUsed = intervalsOf(result, SPELL.FLASK_OF_ENDLESS_RAGE).length > 0;
+  // Igual que en Unholy: el Flask puede haberse aplicado antes del pull y el
+  // slice no contener SPELL_AURA_APPLIED. Para DK asumimos que está activo
+  // desde el pull salvo evidencia explícita en contrario.
+  const flaskIntervals = intervalsOf(result, SPELL.FLASK_OF_ENDLESS_RAGE);
+  const flaskDetectedInLog = flaskIntervals.length > 0;
+  const flaskUsed = true;
+
+  const fightMs = (result.raw.RDURATION || 0) * 1000;
+  const oneMinutePossible = Math.max(1, Math.floor(fightMs / 60000) + 1);
+  const sapperPossible = Math.max(1, Math.floor(fightMs / GLOBAL_THERMAL_SAPPER_COOLDOWN_MS) + 1);
+  const hyperspeedUses = castsOf(result, SPELL.HYPERSPEED_ACCELERATION).length
+    || intervalsOf(result, SPELL.HYPERSPEED_ACCELERATION).length;
+  const saroniteUses = castsOf(result, SPELL.SARONITE_BOMB).length;
+  const globalThermalUses = castsOf(result, SPELL.GLOBAL_THERMAL_SAPPER_CHARGE).length;
+
   const potionUses = [];
   intervalsOf(result, SPELL.SPEED_POTION).forEach(([start]) => potionUses.push({ name: displayNameFor(result, SPELL.SPEED_POTION), ms: start }));
-  // Indestructible Potion: todavía no tenemos el ID de su buff confirmado
-  // contra datos reales (no lo vimos usado en el log de prueba) — cae al
-  // matching por nombre en inglés como fallback, así que en un log en
-  // español puede no detectarse. Ver comentario junto a SPELL arriba.
-  const indestructibleIntervals = (result.debugIntervalsByName || {})['Indestructible Potion'] || [];
-  indestructibleIntervals.forEach(([start]) => potionUses.push({ name: 'Indestructible Potion', ms: start }));
+  // SpellID-only: nunca depender del nombre traducido del buff.
+  const indestructibleIntervals = intervalsOf(result, SPELL.INDESTRUCTIBLE_POTION);
+  indestructibleIntervals.forEach(([start]) => potionUses.push({ name: displayNameFor(result, SPELL.INDESTRUCTIBLE_POTION), ms: start }));
   potionUses.sort((a, b) => a.ms - b.ms);
   const prepotOk = potionUses.length ? (potionUses[0].ms <= 0 && potionUses[0].ms >= -PREPOT_WINDOW_MS) : null;
-  return { flaskUsed, potionUses, prepotOk };
+  return {
+    flaskUsed,
+    flaskDetectedInLog,
+    flaskInferredAtPull: !flaskDetectedInLog,
+    hyperspeed: { used: hyperspeedUses, possible: oneMinutePossible },
+    saroniteBomb: { used: saroniteUses, possible: oneMinutePossible },
+    globalThermalSapperCharge: { used: globalThermalUses, possible: sapperPossible },
+    potionUses,
+    prepotOk,
+  };
 }
 
 // Devuelve el análisis completo de Frost, o null si no aplica (no es DK, o
