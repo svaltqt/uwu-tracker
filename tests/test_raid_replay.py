@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / 'web/js/app.js').read_text()
 PROXY = (ROOT / 'proxy_server.py').read_text()
+CSS = (ROOT / 'web/css/style.css').read_text()
 
 
 def test_proxy_exposes_uwu_get_dps_endpoint():
@@ -52,3 +53,14 @@ def test_dps_proxy_has_dedicated_local_post_route_before_generic_404():
     dps_match = PROXY.index('match = REPORT_DPS_ROUTE_RE.match(path)')
     local_404 = PROXY.index('self.send_error(404, "Ruta de proxy desconocida")')
     assert dps_match < local_404
+
+
+def test_replay_highlights_bloodlust_and_heroism_windows():
+    assert "['2825', '32182']" in APP
+    assert 'data-bloodlust-windows=' in APP
+    assert 'raid-replay-bloodlust-band' in APP
+    assert "Bloodlust / Heroism active" in APP
+    assert "t * 1000 >= startMs" in APP
+    assert "height: 16px" in CSS
+    assert "background: rgba(18, 126, 255, 0.82)" in CSS
+    assert ".raid-replay-slider::-webkit-slider-thumb" in CSS

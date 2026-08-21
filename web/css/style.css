@@ -646,6 +646,9 @@
     margin-bottom: 8px;
   }
   .groster .dk-analysis-summary { color: var(--text); margin-bottom: 8px; }
+  .groster .timeline-csv-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .groster .timeline-csv-toolbar .dk-analysis-summary { margin-bottom: 0; }
+  .groster .timeline-csv-download { flex: 0 0 auto; }
   .groster .dk-analysis-spells { font-family: 'IBM Plex Mono', monospace; font-size: 11px; max-width: 420px; }
   .groster .dk-analysis-spell-row { display: flex; justify-content: space-between; padding: 2px 0; }
 
@@ -697,6 +700,27 @@
   .groster .dk-status-icon.is-ok { color: #3fb950; }
   .groster .dk-status-icon.is-bad { color: #ff6b6b; }
   .groster .dk-row-label { color: var(--text-dim); }
+
+  .groster .mage-analysis { max-width: 520px; }
+  .groster .mage-metric { padding: 6px 0; }
+  .groster .mage-metric-head { display: grid; grid-template-columns: 16px 1fr; gap: 6px; color: var(--text); }
+  .groster .mage-metric.is-good .mage-metric-head > span:first-child { color: #3fb950; }
+  .groster .mage-metric.is-bad .mage-metric-head > span:first-child { color: #ff6b6b; }
+  .groster .mage-metric-detail { margin-left: 22px; padding-top: 2px; color: var(--text-dim); }
+  .groster .mage-metric-subtitle { display: block; margin-top: 5px; color: var(--text); font-weight: 600; }
+  .groster .mage-metric-alert { color: #ff6b6b; }
+  .groster .mage-hot-streak-details {
+    margin: 2px 0 8px 22px;
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .groster .mage-hot-streak-details summary { cursor: pointer; color: var(--teal); }
+  .groster .mage-hot-streak-list {
+    margin-top: 5px;
+    padding: 5px 8px;
+    border-left: 2px solid var(--border);
+  }
+  .groster .mage-hot-streak-list .dk-row { gap: 8px; }
 
   .groster .dk-analysis-note { margin-top: 8px; font-size: 11px; font-style: italic; }
   .groster .dk-analysis-section-title {
@@ -1092,9 +1116,108 @@
   color: var(--gold);
   font-weight: 700;
 }
-.groster .raid-replay-slider {
+.groster .raid-replay-slider-wrap {
+  position: relative;
   width: 100%;
-  margin: 4px 0 10px;
+  height: 30px;
+  margin: 6px 0 2px;
+}
+.groster .raid-replay-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.groster .raid-replay-slider::-webkit-slider-runnable-track {
+  height: 16px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+}
+.groster .raid-replay-slider::-moz-range-track {
+  height: 16px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+}
+.groster .raid-replay-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 24px;
+  margin-top: -4px;
+  border: 1px solid #f4c35a;
+  border-radius: 2px;
+  background: #f4c35a;
+  box-shadow: 0 0 4px rgba(244, 195, 90, 0.55);
+}
+.groster .raid-replay-slider::-moz-range-thumb {
+  width: 10px;
+  height: 24px;
+  border: 1px solid #f4c35a;
+  border-radius: 2px;
+  background: #f4c35a;
+  box-shadow: 0 0 4px rgba(244, 195, 90, 0.55);
+}
+.groster .raid-replay-bloodlust-layer {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 16px;
+  transform: translateY(-50%);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  background: #202630;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.65);
+}
+.groster .raid-replay-bloodlust-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px solid #8bc5ff;
+  border-right: 2px solid #8bc5ff;
+  border-radius: 0;
+  background: rgba(18, 126, 255, 0.82);
+  box-shadow: inset 0 0 6px rgba(155, 211, 255, 0.65), 0 0 8px rgba(18, 126, 255, 0.8);
+}
+.groster .raid-replay-slider-wrap.is-bloodlust-active {
+  filter: drop-shadow(0 0 6px rgba(18, 126, 255, 0.85));
+}
+.groster .raid-replay-slider-wrap.is-bloodlust-active .raid-replay-bloodlust-band {
+  background: #1687ff;
+  box-shadow: inset 0 0 7px rgba(210, 235, 255, 0.8), 0 0 10px rgba(22, 135, 255, 0.95);
+}
+.groster .raid-replay-bloodlust-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 16px;
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+}
+.groster .raid-replay-bloodlust-status::before {
+  content: '';
+  width: 18px;
+  height: 10px;
+  border: 1px solid #8bc5ff;
+  border-radius: 1px;
+  background: #127eff;
+  box-shadow: 0 0 6px rgba(18, 126, 255, 0.7);
+}
+.groster .raid-replay-bloodlust-status.is-active {
+  color: #69a9ff;
+  font-weight: 700;
 }
 .groster .raid-replay-stats {
   display: grid;

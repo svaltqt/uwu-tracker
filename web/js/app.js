@@ -7,6 +7,7 @@ import {
 import { CLASS_ROTATION_CONFIG, DEFAULT_ROTATION_CONFIG } from './data/rotation-config.js';
 import { isFrostDk, computeFrostAnalysis, MAX_POTIONS_EXPECTED } from './analysis/frost-dk.js';
 import { isUnholyDk, computeUnholyAnalysis } from './analysis/unholy-dk.js';
+import { computeFireMageAnalysis } from './analysis/fire-mage.js';
 import {
   formatScore, scoreColor, parseReportDate, formatReportDate, formatDuration,
   formatTimelineMs, formatAbbreviated, rankingValueHtml, dpsValueHtml,
@@ -1605,6 +1606,7 @@ import {
     // resto del análisis de rotación.
     try {
       const playerHtml = await fetchPlayerDamagePage(reportId, bossHtml, attempt, playerName);
+      result.damageBreakdown = parsePlayerDamageBreakdownHtml(playerHtml);
       const unholyPreview = isUnholyDk(result) ? computeUnholyAnalysis(result) : null;
       const ghoulName = unholyPreview ? unholyPreview.ghoulName : null;
       result.petDamage = parsePlayerPetDamageHtml(playerHtml, ghoulName);
@@ -2114,9 +2116,19 @@ import {
 
     const timeEl = pane.querySelector('.raid-replay-time');
     const slider = pane.querySelector('.raid-replay-slider');
+    const sliderWrap = pane.querySelector('.raid-replay-slider-wrap');
+    const bloodlustStatus = pane.querySelector('.raid-replay-bloodlust-status');
     const tbody = pane.querySelector('.raid-replay-table tbody');
+    const bloodlustActive = (replay.bloodlustWindows || []).some(([startMs, endMs]) => (
+      t * 1000 >= startMs && t * 1000 <= endMs
+    ));
     if (timeEl) timeEl.textContent = `${formatReplayClock(t, true)} / ${formatReplayClock(replay.maxSecond)}`;
     if (slider && document.activeElement !== slider) slider.value = String(t);
+    sliderWrap?.classList.toggle('is-bloodlust-active', bloodlustActive);
+    if (bloodlustStatus) {
+      bloodlustStatus.classList.toggle('is-active', bloodlustActive);
+      bloodlustStatus.textContent = bloodlustActive ? 'Bloodlust / Heroism active' : 'Bloodlust / Heroism';
+    }
     if (tbody) {
       const maxDamage = Math.max(1, ...rows.map((m) => m.damage));
       tbody.innerHTML = rows.map((m, i) => {
@@ -2271,7 +2283,18 @@ import {
     pane.dataset.loading = '1';
     pane.innerHTML = '<div class="dk-analysis-summary">Loading player DPS replay…</div>';
     try {
-      const replay = await fetchRaidReplay(panel.dataset.reportId, panel.dataset.bossName, panel.dataset.playerName);
+      const fetchedReplay = await fetchRaidReplay(panel.dataset.reportId, panel.dataset.bossName, panel.dataset.playerName);
+      const bloodlustWindows = String(panel.dataset.bloodlustWindows || '')
+        .split(',')
+        .map((entry) => entry.split(':').map(Number))
+        .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start);
+      const replay = { ...fetchedReplay, bloodlustWindows };
+      const bloodlustBands = bloodlustWindows.map(([startMs, endMs]) => {
+        const fightMs = Math.max(1, replay.maxSecond * 1000);
+        const left = Math.max(0, Math.min(100, (startMs / fightMs) * 100));
+        const right = Math.max(left, Math.min(100, (endMs / fightMs) * 100));
+        return `<span class="raid-replay-bloodlust-band" style="left:${left.toFixed(3)}%;width:${(right - left).toFixed(3)}%" title="Bloodlust / Heroism: ${formatTimelineMs(startMs)}–${formatTimelineMs(endMs)}"></span>`;
+      }).join('');
       pane.dataset.loaded = '1';
       pane.innerHTML = `
         <div class="raid-replay-toolbar">
@@ -2286,7 +2309,11 @@ import {
           </label>
           <span class="raid-replay-time">00:00 / ${formatReplayClock(replay.maxSecond)}</span>
         </div>
-        <input class="raid-replay-slider" type="range" min="0" max="${replay.maxSecond}" value="0" step="0.1">
+        <div class="raid-replay-slider-wrap">
+          <div class="raid-replay-bloodlust-layer" aria-hidden="true">${bloodlustBands}</div>
+          <input class="raid-replay-slider" type="range" min="0" max="${replay.maxSecond}" value="0" step="0.1" aria-label="Raid Replay timeline">
+        </div>
+        ${bloodlustWindows.length ? '<div class="raid-replay-bloodlust-status">Bloodlust / Heroism</div>' : ''}
         <div class="raid-replay-table-wrap">
           <table class="raid-replay-table">
             <thead><tr><th>#</th><th>Player</th><th>Avg DPS</th><th>Damage</th></tr></thead>
@@ -2304,6 +2331,54 @@ import {
   }
 
   // Tabs Summary / Timeline / Raid Replay inside one analysis panel.
+  function timelineCsvEscape(value) {
+    const text = String(value == null ? '' : value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function timelineCellText(cell) {
+    if (!cell) return '';
+    const icons = [...cell.querySelectorAll('img')]
+      .map((img) => img.title || img.alt || '')
+      .filter(Boolean);
+    if (icons.length) return icons.join(' | ');
+    return cell.textContent.replace(/\s+/g, ' ').trim().replace('–', '');
+  }
+
+  function downloadTimelineCsv(panel) {
+    const pane = panel.querySelector('[data-dkpane="timeline"]');
+    if (!pane) return;
+
+    let rows = [...pane.querySelectorAll('.dk-analysis-timeline-table tbody tr')]
+      .map((tr) => [...tr.children].map(timelineCellText));
+
+    // Las clases no-DK usan CSS Grid en vez de <table>: cada 5 celdas
+    // consecutivas representan una fila con las mismas columnas.
+    if (!rows.length) {
+      const cells = [...pane.querySelectorAll('.lock-timeline-cell')];
+      rows = [];
+      for (let i = 0; i < cells.length; i += 5) {
+        rows.push(cells.slice(i, i + 5).map(timelineCellText));
+      }
+    }
+
+    const csvRows = [['Time', 'Ability', 'Target', 'Buffs', 'Procs'], ...rows];
+    const csv = `\uFEFF${csvRows.map((row) => row.map(timelineCsvEscape).join(',')).join('\r\n')}`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const safePart = (value, fallback) => String(value || fallback)
+      .replace(/[^a-z0-9_-]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+    link.href = url;
+    link.download = `timeline-${safePart(panel.dataset.playerName, 'player')}-${safePart(panel.dataset.bossName, 'encounter')}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   function wireAnalysisTabs(root) {
     root.querySelectorAll('.dk-tab').forEach((tabBtn) => {
       tabBtn.addEventListener('click', () => {
@@ -2314,6 +2389,12 @@ import {
         const replayPane = root.querySelector('[data-dkpane="replay"]');
         if (tabBtn.dataset.dktab === 'replay') ensureRaidReplayLoaded(root);
         else stopRaidReplay(replayPane);
+      });
+    });
+    root.querySelectorAll('.timeline-csv-download').forEach((button) => {
+      button.addEventListener('click', () => {
+        const panel = button.closest('.dk-analysis-panel');
+        if (panel) downloadTimelineCsv(panel);
       });
     });
   }
@@ -2330,6 +2411,19 @@ import {
     const otherUptimes = result.uptimes.filter((u) => u.category === 'other');
     const frost = isFrostDk(result) ? computeFrostAnalysis(result) : null;
     const unholy = (!frost && isUnholyDk(result)) ? computeUnholyAnalysis(result) : null;
+    const fireMage = computeFireMageAnalysis(result, bossName);
+    const rawBloodlustWindows = ['2825', '32182']
+      .flatMap((id) => (result.debugIntervalsById && result.debugIntervalsById[id]) || [])
+      .map(([start, end]) => [Number(start), Number(end)])
+      .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end > start)
+      .sort((a, b) => a[0] - b[0]);
+    const bloodlustWindows = rawBloodlustWindows.reduce((merged, interval) => {
+      const previous = merged[merged.length - 1];
+      if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+      else merged.push([...interval]);
+      return merged;
+    }, []);
+    const encodedBloodlustWindows = bloodlustWindows.map(([start, end]) => `${start}:${end}`).join(',');
     if (frost && frost.killingMachine) {
       // Diagnóstico puntual: intervalos calculados de Killing Machine
       // (APPLIED->REMOVED) contra los casteos reales de Obliterate/Frost
@@ -2360,6 +2454,31 @@ import {
     const boolValue = (ok) => `<span class="dk-status-icon ${ok ? 'is-ok' : 'is-bad'}" aria-label="${ok ? 'yes' : 'no'}" title="${ok ? 'yes' : 'no'}">${ok ? '✔' : '✖'}</span>`;
     const checkRow = (label, value, ok) => `<div class="dk-row ${ok ? 'dk-row-good' : 'dk-row-bad'}"><span class="dk-row-icon">${ok ? '✔' : '✖'}</span><span class="dk-row-label">${label}</span><span class="dk-row-value">${value}</span></div>`;
     const fmtInt = (value) => Math.round(Number(value) || 0).toLocaleString('en-US');
+    const mageEscape = (value) => String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const mageMetric = (ok, title, details = []) => `
+      <div class="mage-metric ${ok ? 'is-good' : 'is-bad'}">
+        <div class="mage-metric-head"><span>${ok ? '✔' : '✖'}</span><span>${title}</span></div>
+        ${details.filter(Boolean).map((detail) => `<div class="mage-metric-detail">${detail}</div>`).join('')}
+      </div>`;
+    const mageProcLine = (proc) => `• ${proc.category ? `${mageEscape(proc.category)}: ` : ''}${mageEscape(proc.name)}`;
+    const mageCombustionWindow = (window, label, extraDetails = []) => {
+      if (!window) return mageMetric(false, `${label} — not used`);
+      const allProcs = [...window.active, ...window.triggered];
+      const hasTrinket = allProcs.some((proc) => proc.category === 'Trinket');
+      const details = [
+        ...extraDetails,
+        '<span class="mage-metric-subtitle">Active at activation:</span>',
+        ...(window.active.length ? window.active.map(mageProcLine) : ['• None detected']),
+        '<span class="mage-metric-subtitle">Triggered during the window:</span>',
+        ...(window.triggered.length ? window.triggered.map(mageProcLine) : ['• None detected']),
+        hasTrinket ? '' : '<span class="mage-metric-alert">✖ No trinket proc was active</span>',
+      ];
+      return mageMetric(true, `${label} at ${formatTimelineMs(window.start)}`, details);
+    };
+    const magePotionWindow = (use, label) => use
+      ? mageMetric(true, `${label} at ${formatTimelineMs(use.ms)}`, [`• Potion: ${mageEscape(use.name)}`])
+      : mageMetric(false, `${label} — not used`);
     const damageShare = (amount) => result.petDamage && result.petDamage.playerTotalDamage > 0
       ? `${((amount / result.petDamage.playerTotalDamage) * 100).toFixed(2)}%`
       : '–';
@@ -2448,7 +2567,73 @@ import {
          </div>`
       : '';
 
-    const rotationSection = unholy
+    const fireMageRotationSection = fireMage ? (() => {
+      const ignite = fireMage.ignite;
+      const hot = fireMage.hotStreak;
+      const livingBomb = fireMage.livingBomb;
+      const flamestrike = fireMage.flamestrike;
+      const invisibility = fireMage.invisibility;
+      const combustion = fireMage.combustion;
+      const potions = fireMage.potions;
+      const mirror = fireMage.mirrorImage;
+      const hotStreakProcDetails = hot.procs.length
+        ? `<details class="mage-hot-streak-details">
+            <summary>Hot Streak proc details (${hot.procs.length})</summary>
+            <div class="mage-hot-streak-list">
+              ${hot.procs.map((proc) => checkRow(
+                `Hot Streak #${proc.index} at ${formatTimelineMs(proc.start)}`,
+                proc.consumed
+                  ? `Pyroblast at ${formatTimelineMs(proc.pyroblastMs)} · ${(proc.reactionMs / 1000).toFixed(2)}s`
+                  : (proc.endReason === 'refreshed'
+                    ? `not consumed · overwritten at ${formatTimelineMs(proc.end)}`
+                    : `not consumed · ended at ${formatTimelineMs(proc.end)}`),
+                proc.consumed,
+              )).join('')}
+            </div>
+          </details>`
+        : '';
+      return `<div class="dk-analysis-section-title">Rotation</div>
+        <div class="dk-analysis-spells mage-analysis">
+          ${mageMetric(ignite.damage > 0, `Ignite dealt ${fmtInt(ignite.damage)} total damage`, [
+            ignite.sharePct == null ? '• Damage share unavailable' : `• ${ignite.sharePct.toFixed(1)}% of your total damage`,
+          ])}
+          ${mageMetric(hot.total > 0 && hot.consumed === hot.total, `You consumed ${hot.consumed} of ${hot.total} Hot Streak procs`, [
+            `• Hot Streak efficiency: ${hot.efficiencyPct.toFixed(1)}%`,
+            hot.averageReactionMs == null ? '• Reaction time unavailable' : `• Average reaction time: ${(hot.averageReactionMs / 1000).toFixed(2)} seconds`,
+            hot.fastestReactionMs == null ? '' : `• Fastest reaction: ${(hot.fastestReactionMs / 1000).toFixed(2)} seconds`,
+            hot.slowestReactionMs == null ? '' : `• Slowest reaction: ${(hot.slowestReactionMs / 1000).toFixed(2)} seconds`,
+            hot.missed > 0 ? `• ${hot.missed} proc${hot.missed === 1 ? ' was' : 's were'} not consumed` : '• Every proc was consumed',
+          ])}
+          ${hotStreakProcDetails}
+          ${mageMetric(livingBomb.complete, 'You applied Living Bomb to Gormok, Snobolds, both Jormungars, and Icehowl')}
+          ${mageMetric(flamestrike.used, 'You used Flamestrike on the stacked Snobolds after Gormok died', [
+            `• Flamestrike Rank 9: ${flamestrike.rank9} cast${flamestrike.rank9 === 1 ? '' : 's'}`,
+            `• Flamestrike Rank 8: ${flamestrike.rank8} cast${flamestrike.rank8 === 1 ? '' : 's'}`,
+          ])}
+          ${mageMetric(invisibility.used, 'You used Invisibility after the Jormungars disappeared or died and before Icehowl appeared', [
+            invisibility.used
+              ? `• Invisibility: ${invisibility.count} cast${invisibility.count === 1 ? '' : 's'} at ${invisibility.times.map(formatTimelineMs).join(', ')}`
+              : '• No Invisibility cast was detected in the transition window',
+          ])}
+          ${mageMetric(combustion.usedPriorityWindows === combustion.possiblePriorityWindows,
+            `You used Combustion in ${combustion.usedPriorityWindows} of ${combustion.possiblePriorityWindows} priority windows`)}
+          ${mageCombustionWindow(combustion.pull, 'Combustion #1 — Pull: Gormok')}
+          ${mageCombustionWindow(combustion.daze, 'Combustion #2 — Icehowl: Staggered Daze', [
+            '• Damage-taken increase: 100%',
+            `• Window duration: ${combustion.dazeDurationSec} seconds`,
+          ])}
+          ${mageMetric(potions.usedPriorityWindows === potions.possiblePriorityWindows,
+            `You used potions in ${potions.usedPriorityWindows} of ${potions.possiblePriorityWindows} priority windows`)}
+          ${magePotionWindow(potions.prepull, 'Potion #1 — Pre-pull')}
+          ${magePotionWindow(potions.afterGormok, 'Potion #2 — After Gormok died')}
+          ${magePotionWindow(potions.staggeredDaze, 'Potion #3 — Icehowl: Staggered Daze')}
+          ${mageMetric(mirror.used >= mirror.possible, `You used Mirror Image ${mirror.used} of ${mirror.possible} possible times`)}
+        </div>`;
+    })() : '';
+
+    const rotationSection = fireMage
+      ? fireMageRotationSection
+      : unholy
       ? unholyRotationSection
       : (rotationUptimes.length || castNoteRows || uaRows || howlingBlastRow || rimeRow)
         ? `<div class="dk-analysis-section-title">Rotation</div>
@@ -2607,22 +2792,30 @@ import {
         + checkRow('You used Saronite Bomb', `${unholy.consumables.saroniteBomb.used} of ${unholy.consumables.saroniteBomb.possible} possible times`, unholy.consumables.saroniteBomb.used >= unholy.consumables.saroniteBomb.possible)
         + checkRow('You had a Flask of Endless Rage', boolValue(unholy.consumables.flaskUsed), unholy.consumables.flaskUsed)
       : '';
-    const miscSection = (consumableRows || unholyConsumableRows)
-      ? `<div class="dk-analysis-section-title">Miscellaneous</div>
-         <div class="dk-analysis-spells">${consumableRows}${unholyConsumableRows}</div>`
+    const fireMageConsumableRows = fireMage && fireMage.miscellaneous
+      ? checkRow('You used Hyperspeed Accelerators', `${fireMage.miscellaneous.hyperspeed.used} of ${fireMage.miscellaneous.hyperspeed.possible} possible times`, fireMage.miscellaneous.hyperspeed.used >= fireMage.miscellaneous.hyperspeed.possible)
+        + checkRow('You used Global Thermal Sapper Charge', `${fireMage.miscellaneous.globalThermalSapperCharge.used} of ${fireMage.miscellaneous.globalThermalSapperCharge.possible} possible times`, fireMage.miscellaneous.globalThermalSapperCharge.used >= fireMage.miscellaneous.globalThermalSapperCharge.possible)
+        + checkRow('You used Saronite Bomb', `${fireMage.miscellaneous.saroniteBomb.used} of ${fireMage.miscellaneous.saroniteBomb.possible} possible times`, fireMage.miscellaneous.saroniteBomb.used >= fireMage.miscellaneous.saroniteBomb.possible)
+        + checkRow('You had a Flask of the Frost Wyrm', boolValue(fireMage.miscellaneous.flaskUsed), fireMage.miscellaneous.flaskUsed)
+        + checkRow('Potions used (Wild Magic / Speed)', `${fireMage.miscellaneous.potionUses.length} of ${fireMage.miscellaneous.potionsPossible}`, fireMage.miscellaneous.potionUses.length >= fireMage.miscellaneous.potionsPossible)
+        + checkRow('First potion was a pre-pot (≤60s before pull)', boolValue(fireMage.miscellaneous.prepotOk), fireMage.miscellaneous.prepotOk)
       : '';
-    const otherUptimesSection = otherUptimes.length
+    const miscSection = (consumableRows || unholyConsumableRows || fireMageConsumableRows)
+      ? `<div class="dk-analysis-section-title">Miscellaneous</div>
+         <div class="dk-analysis-spells">${consumableRows}${unholyConsumableRows}${fireMageConsumableRows}</div>`
+      : '';
+    const otherUptimesSection = !fireMage && otherUptimes.length
       ? `<div class="dk-analysis-section-title">Other Uptimes</div>
          <div class="dk-analysis-spells">${otherUptimes.map(uptimeRow).join('')}</div>`
       : '';
 
-    const nothingFound = !rotationUptimes.length && !otherUptimes.length && !result.gargoyle && !castNoteRows
+    const nothingFound = !fireMage && !rotationUptimes.length && !otherUptimes.length && !result.gargoyle && !castNoteRows
       ? '<div class="dk-analysis-spell-row"><span>No self-sourced auras with a start/end were detected in this attempt</span></div>'
       : '';
 
     const summaryTabHtml = `
       ${header}
-      ${unholy ? '' : `<div class="dk-analysis-summary"><strong>${result.totalEvents}</strong> total events across <strong>${result.uniqueSpells}</strong> distinct spells during the kill attempt.</div>`}
+      ${unholy || fireMage ? '' : `<div class="dk-analysis-summary"><strong>${result.totalEvents}</strong> total events across <strong>${result.uniqueSpells}</strong> distinct spells during the kill attempt.</div>`}
       ${speedSection}
       ${rotationSection}
       ${gargoyleSection}
@@ -2655,8 +2848,11 @@ import {
     // deliberadamente SIN compartir clases/CSS con la tabla de DK, para
     // que un ajuste de una no le rompa nada a la otra nunca más.
     const timelineTabHtml = isDkClass ? `
-      <div class="dk-analysis-summary">
-        <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+      <div class="timeline-csv-toolbar">
+        <div class="dk-analysis-summary">
+          <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+        </div>
+        <button type="button" class="secondary timeline-csv-download">Download CSV</button>
       </div>
       <div class="dk-analysis-timeline-table-wrap">
         <table class="dk-analysis-timeline-table has-dk-cols">
@@ -2686,8 +2882,11 @@ import {
           </tbody>
         </table>
       </div>` : `
-      <div class="dk-analysis-summary">
-        <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+      <div class="timeline-csv-toolbar">
+        <div class="dk-analysis-summary">
+          <strong>${timelineRowsDesc.length}</strong> casts, from -0:15.0 (pre-pull) to ${formatDuration(result.raw.RDURATION)}.
+        </div>
+        <button type="button" class="secondary timeline-csv-download">Download CSV</button>
       </div>
       <div class="lock-timeline-wrap">
         <div class="lock-timeline-grid">
@@ -2711,7 +2910,7 @@ import {
       </div>`;
 
     return `
-      <div class="dk-analysis-panel" data-report-id="${reportId || ''}" data-boss-name="${String(bossName || '').replace(/"/g, '&quot;')}" data-player-name="${String(playerName || result.raw.NAME || '').replace(/"/g, '&quot;')}">
+      <div class="dk-analysis-panel" data-report-id="${reportId || ''}" data-boss-name="${String(bossName || '').replace(/"/g, '&quot;')}" data-player-name="${String(playerName || result.raw.NAME || '').replace(/"/g, '&quot;')}" data-bloodlust-windows="${encodedBloodlustWindows}">
         <div class="dk-analysis-warning">⚠ Experimental — undocumented uwu-logs.xyz endpoints. GCD delay is approximate; everything else is calculated from the real response, filtered by source (only your own buffs/debuffs).</div>
         <div class="dk-tabs">
           <button type="button" class="dk-tab active" data-dktab="resumen">Summary</button>
