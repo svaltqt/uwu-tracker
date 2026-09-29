@@ -23,7 +23,7 @@ import sys
 import threading
 import webbrowser
 from datetime import datetime, timezone
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
@@ -120,6 +120,11 @@ def _init_cache_db() -> sqlite3.Connection:
 
 CACHE_DB = _init_cache_db()
 
+# El servidor es multihilo (ThreadingHTTPServer) pero CACHE_DB y HISTORY_DB
+# son conexiones únicas compartidas (check_same_thread=False): todo acceso
+# tiene que pasar por este lock.
+DB_LOCK = threading.RLock()
+
 # --- Historial para "Progreso en el tiempo" -----------------------------
 # Mismo schema que src/uwu_tracker/db.py (el que usa el CLI), y por default
 # el MISMO archivo data/uwu_logs.db — así lo que guarda `uwu-tracker fetch`
@@ -188,10 +193,11 @@ HISTORY_DB = _init_history_db()
 
 
 def _should_save_snapshot(server: str, name: str, spec: str) -> bool:
-    row = HISTORY_DB.execute(
-        "SELECT fetched_at FROM snapshots WHERE server = ? AND name = ? AND spec = ? ORDER BY fetched_at DESC LIMIT 1",
-        (server, name, spec),
-    ).fetchone()
+    with DB_LOCK:
+        row = HISTORY_DB.execute(
+            "SELECT fetched_at FROM snapshots WHERE server = ? AND name = ? AND spec = ? ORDER BY fetched_at DESC LIMIT 1",
+            (server, name, spec),
+        ).fetchone()
     if row is None:
         return True
     try:
@@ -203,30 +209,40 @@ def _should_save_snapshot(server: str, name: str, spec: str) -> bool:
     return (datetime.now(timezone.utc) - last).total_seconds() >= SNAPSHOT_MIN_INTERVAL_HOURS * 3600
 
 
+def _sqlite_value(value):
+    # sqlite3 no puede bindear listas/dicts: se guardan como JSON.
+    if isinstance(value, (list, dict)):
+        return json.dumps(value)
+    return value
+
+
 def _save_history_snapshot(server: str, name: str, spec: str, data: dict) -> None:
-    if not _should_save_snapshot(server, name, spec):
-        return
     now = datetime.now(timezone.utc).isoformat()
-    cur = HISTORY_DB.execute(
-        """
-        INSERT INTO snapshots (server, name, spec, fetched_at, class_i, overall_points, overall_rank, raw_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (server, name, spec, now, data.get("class_i"), data.get("overall_points"), data.get("overall_rank"), json.dumps(data)),
-    )
-    snapshot_id = cur.lastrowid
-    for boss_name, b in (data.get("bosses") or {}).items():
-        if not b:
-            continue
-        values = [b.get(f) for f in _HISTORY_BOSS_FIELDS]
-        HISTORY_DB.execute(
-            f"""
-            INSERT INTO boss_kills (snapshot_id, boss_name, {", ".join(_HISTORY_BOSS_FIELDS)})
-            VALUES (?, ?, {", ".join("?" for _ in _HISTORY_BOSS_FIELDS)})
-            """,
-            (snapshot_id, boss_name, *values),
-        )
-    HISTORY_DB.commit()
+    # Un solo lock + transacción: o se guarda el snapshot con todos sus
+    # bosses, o no se guarda nada (nunca queda un snapshot huérfano).
+    with DB_LOCK:
+        if not _should_save_snapshot(server, name, spec):
+            return
+        with HISTORY_DB:
+            cur = HISTORY_DB.execute(
+                """
+                INSERT INTO snapshots (server, name, spec, fetched_at, class_i, overall_points, overall_rank, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (server, name, spec, now, data.get("class_i"), data.get("overall_points"), data.get("overall_rank"), json.dumps(data)),
+            )
+            snapshot_id = cur.lastrowid
+            for boss_name, b in (data.get("bosses") or {}).items():
+                if not b:
+                    continue
+                values = [_sqlite_value(b.get(f)) for f in _HISTORY_BOSS_FIELDS]
+                HISTORY_DB.execute(
+                    f"""
+                    INSERT INTO boss_kills (snapshot_id, boss_name, {", ".join(_HISTORY_BOSS_FIELDS)})
+                    VALUES (?, ?, {", ".join("?" for _ in _HISTORY_BOSS_FIELDS)})
+                    """,
+                    (snapshot_id, boss_name, *values),
+                )
 
 
 HISTORY_ROUTE_RE = re.compile(r"^/api/history/([^/]+)/([^/]+)/([^/]+)$")
@@ -287,29 +303,31 @@ def _cache_key(upstream_path: str, body: bytes | None) -> str:
 
 
 def _cache_get(cache_key: str) -> tuple[int, str, bytes] | None:
-    row = CACHE_DB.execute(
-        "SELECT status, content_type, response_body FROM analysis_cache WHERE cache_key = ?",
-        (cache_key,),
-    ).fetchone()
+    with DB_LOCK:
+        row = CACHE_DB.execute(
+            "SELECT status, content_type, response_body FROM analysis_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
     return row if row else None
 
 
 def _cache_set(cache_key: str, upstream_path: str, body: bytes | None, status: int, content_type: str, response_body: bytes) -> None:
-    CACHE_DB.execute(
-        """INSERT OR REPLACE INTO analysis_cache
-           (cache_key, upstream_path, request_body, status, content_type, response_body, fetched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (
-            cache_key,
-            upstream_path,
-            (body or b"").decode("utf-8", "replace"),
-            status,
-            content_type,
-            response_body,
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-    CACHE_DB.commit()
+    with DB_LOCK:
+        CACHE_DB.execute(
+            """INSERT OR REPLACE INTO analysis_cache
+               (cache_key, upstream_path, request_body, status, content_type, response_body, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                cache_key,
+                upstream_path,
+                (body or b"").decode("utf-8", "replace"),
+                status,
+                content_type,
+                response_body,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        CACHE_DB.commit()
 
 
 class ProxyHandler(SimpleHTTPRequestHandler):
@@ -347,7 +365,13 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         match = DYNAMIC_ROUTE_RE.match(path)
         if match is not None:
             route_name, report_id = match.groups()
-            upstream_path = DYNAMIC_PROXY_ROUTES[route_name].format(report_id=report_id)
+            report_id = unquote(report_id)
+            if report_id in (".", ".."):
+                self._send_json(400, {"error": "report_id inválido"})
+                return
+            upstream_path = DYNAMIC_PROXY_ROUTES[route_name].format(
+                report_id=quote(report_id, safe="-"),
+            )
             self._proxy_json(upstream_path, cacheable=route_name in CACHEABLE_ROUTE_NAMES)
             return
 
@@ -404,10 +428,11 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_get_history(self, server: str, name: str, spec: str) -> None:
-        rows = HISTORY_DB.execute(
-            "SELECT fetched_at, overall_points, overall_rank FROM snapshots WHERE server = ? AND name = ? AND spec = ? ORDER BY fetched_at ASC",
-            (server, name, spec),
-        ).fetchall()
+        with DB_LOCK:
+            rows = HISTORY_DB.execute(
+                "SELECT fetched_at, overall_points, overall_rank FROM snapshots WHERE server = ? AND name = ? AND spec = ? ORDER BY fetched_at ASC",
+                (server, name, spec),
+            ).fetchall()
         self._send_json(200, [{"fetched_at": r[0], "overall_points": r[1], "overall_rank": r[2]} for r in rows])
 
     def _maybe_save_snapshot(self, request_body: bytes, response_data: bytes) -> None:
@@ -432,7 +457,13 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             print(f"[proxy] no se pudo guardar el snapshot de historial: {exc}")
 
     def _proxy_json(self, upstream_path: str, cacheable: bool = False, on_success=None) -> None:
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length < 0:
+                raise ValueError("negative")
+        except ValueError:
+            self._send_json(400, {"error": "Content-Length inválido"})
+            return
         body = self.rfile.read(length)
 
         cache_key = _cache_key(upstream_path, body) if cacheable else None
@@ -447,8 +478,9 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         stale_empty_dps = True
                 if stale_empty_dps:
-                    CACHE_DB.execute("DELETE FROM analysis_cache WHERE cache_key = ?", (cache_key,))
-                    CACHE_DB.commit()
+                    with DB_LOCK:
+                        CACHE_DB.execute("DELETE FROM analysis_cache WHERE cache_key = ?", (cache_key,))
+                        CACHE_DB.commit()
                 else:
                     self.send_response(status)
                     self._cors_headers()
@@ -578,7 +610,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     try:
-        server = HTTPServer(("localhost", PORT), ProxyHandler)
+        server = ThreadingHTTPServer(("localhost", PORT), ProxyHandler)
     except OSError as exc:
         print(f"No se pudo levantar el servidor en el puerto {PORT}: {exc}")
         print("¿Ya hay otra instancia de uwu-tracker corriendo? Cerrala e intentá de nuevo,")
