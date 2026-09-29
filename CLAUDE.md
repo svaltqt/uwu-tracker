@@ -59,6 +59,13 @@ En Windows, `tests/test_raid_replay.py` lee `app.js` sin `encoding` y falla al i
 - Incluye el ID de la historia en el mensaje de commit que me sugieras,
   por ejemplo: fix(proxy): escape report_id (UT-05).
 
+  ## Proceso
+
+- Sigue docs/PROCESO.md: una historia por branch, commits con el formato
+  tipo(ámbito): descripción (UT-XX), y la definición de hecho de ese archivo.
+- Antes de empezar, verifica que el branch actual corresponde a la historia
+  que te pido. Si no, avísame en vez de trabajar ahí.
+
 ## Tests
 
 - `tests/test_raid_replay.py` y `tests/test_fire_mage.py` **no son tests automatizados de comportamiento**: no ejecutan JS ni usan la red. Leen `web/js/app.js`, `proxy_server.py`, `style.css`, etc. y verifican que existan ciertos strings (`"slice(0, 10)"`, `'▶ PLAY'`, `mapWithConcurrency(candidates, 3`), para validar que los datos/elementos que deben verse en el dashboard sigan conectados. Que pasen no prueba que los datos se rendericen bien: eso se verifica en el navegador con `proxy_server.py`. Renombrar esos fragmentos rompe los tests aunque el comportamiento no cambie; actualizar los tests junto con el código.
