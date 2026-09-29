@@ -1,7 +1,7 @@
 ## Historias
 
-<!-- IDs que cierra este PR, ej. UT-05 -->
-Cierra:
+<!-- Issue que cierra este PR, ej. Closes #7 (uno por línea si son varios) -->
+Closes #
 
 ## Qué cambia
 
@@ -11,5 +11,5 @@ Cierra:
 
 - [ ] Los tests pasan (`python3 -m unittest discover -s tests`)
 - [ ] Probado a mano con datos reales (si toca la API o el dashboard)
-- [ ] Criterios marcados en docs/HISTORIAS_DE_USUARIO.md
+- [ ] Criterios marcados en el issue
 - [ ] README o docs/API.md actualizados (si cambió el uso o la API)

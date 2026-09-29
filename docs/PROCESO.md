@@ -1,38 +1,60 @@
 # Proceso de trabajo
 
-Cómo se trabaja en uwu-tracker desde septiembre de 2026. El backlog está en
-[HISTORIAS_DE_USUARIO.md](HISTORIAS_DE_USUARIO.md).
+Cómo se trabaja en uwu-tracker desde septiembre de 2026. El backlog vive en los
+issues de GitHub, organizados en el Project
+[uwu-tracker](https://github.com/users/svaltqt/projects/2). Las historias de la
+funcionalidad que ya existía están en [HISTORIAS_DE_USUARIO.md](HISTORIAS_DE_USUARIO.md).
+
+## Estados
+
+Los estados son los del Project:
+
+| Estado | Significado |
+| --- | --- |
+| `Backlog` | Historia registrada, sin prioridad de arranque |
+| `Ready` | Cumple la definición de listo y se puede empezar |
+| `In progress` | Tiene un branch abierto. Solo una historia a la vez |
+| `In review` | Código y tests listos; falta probar a mano, revisar el PR o mezclar |
+| `Done` | Cumple la definición de hecho |
+
+La prioridad usa el campo `Priority` del Project: `P0` (la más urgente), `P1` y `P2`.
 
 ## Flujo de una historia
 
-1. **Elegir** una historia de "Por hacer". Solo una historia en progreso a la vez.
-2. **Crear el branch** desde `main` actualizado:
+1. **Crear el issue** si todavía no existe. Cada historia nueva es un issue con el
+   formato "Como…, quiero…, para…", los criterios de aceptación como task list
+   (`- [ ]`), un label de tipo y su lugar en el Project. El título lleva el ID:
+   `UT-XX: <título>`.
+2. **Elegir** un issue en `Ready`. Solo una historia en `In progress` a la vez.
+3. **Crear el branch** desde `main` actualizado, con el número del issue:
    ```
    git checkout main
    git pull
-   git checkout -b fix/UT-15-proxy-windows
+   git checkout -b fix/17-proxy-windows
    ```
-3. **Moverla a "En progreso"** en HISTORIAS_DE_USUARIO.md.
-4. **Implementar** con tests. Cada criterio cumplido se marca con `[x]`.
-5. **Commitear** en pasos pequeños, con el ID en el mensaje.
-6. **Probar a mano** con datos reales cuando el cambio toque la API o el dashboard.
-7. **Abrir un pull request** a `main` y revisar el diff completo.
-8. **Mezclar**, borrar el branch y mover la historia a "Hecho".
+4. **Moverlo a `In progress`** en el Project.
+5. **Implementar** con tests. Cada criterio cumplido se marca en el issue.
+6. **Commitear** en pasos pequeños, con el ID en el mensaje.
+7. **Probar a mano** con datos reales cuando el cambio toque la API o el dashboard.
+8. **Abrir un pull request** a `main` con `Closes #N` en la descripción (N es el
+   número del issue), pasarlo a `In review` y revisar el diff completo.
+9. **Mezclar** y borrar el branch. Al mezclar, `Closes #N` cierra el issue y el
+   Project lo pasa a `Done`.
 
-Las historias que salgan durante el trabajo se agregan al backlog; no se
-resuelven en el branch actual salvo que bloqueen la historia en curso.
+Las historias que salgan durante el trabajo se crean como issue nuevo en `Backlog`;
+no se resuelven en el branch actual salvo que bloqueen la historia en curso.
 
 ## Definición de listo
 
-Una historia puede pasar a "Por hacer" cuando tiene:
+Un issue puede pasar a `Ready` cuando tiene:
 
 - El formato "Como…, quiero…, para…".
 - Criterios de aceptación que se puedan comprobar.
-- Tipo y prioridad.
+- Label de tipo y `Priority`.
 
 ## Definición de hecho
 
-Una historia está en "Hecho" cuando:
+Una historia está en `Done` cuando:
 
 - Todos sus criterios están marcados.
 - Los tests pasan, incluidos los que ya existían.
@@ -42,7 +64,8 @@ Una historia está en "Hecho" cuando:
 
 ## Nombres de branch
 
-`tipo/UT-XX-descripcion-corta`, en minúsculas y con guiones.
+`tipo/N-descripcion-corta`, en minúsculas y con guiones, donde `N` es el número del
+issue (no el ID `UT-XX`).
 
 | Tipo | Uso |
 | --- | --- |

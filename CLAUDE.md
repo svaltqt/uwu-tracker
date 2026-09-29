@@ -48,21 +48,31 @@ En Windows, `tests/test_raid_replay.py` lee `app.js` sin `encoding` y falla al i
 
 ## Historias de usuario
 
-- El backlog del proyecto está en docs/HISTORIAS_DE_USUARIO.md. Léelo antes de
-  empezar una tarea y dime a qué historia (UT-XX) corresponde. Si no corresponde
-  a ninguna, avísame antes de empezar.
-- Cuando cumplas un criterio de aceptación, márcalo con [x] en el archivo.
-- Puedes mover una historia a "En revisión" cuando el código y sus tests estén
-  listos. Moverla a "Hecho" lo decido yo, después de probar y commitear.
+- El backlog está en los issues de GitHub (Project uwu-tracker), un issue por
+  historia, con título `UT-XX: <título>`. Léelos con `gh issue view <número>` o
+  `gh issue list` antes de empezar una tarea, y dime a qué historia corresponde.
+  Si no corresponde a ninguna, avísame antes de empezar.
+- No crees, edites ni cierres issues, ni muevas tarjetas del Project: eso lo hago
+  yo. Los comandos de solo lectura (`gh issue view`, `gh issue list`,
+  `gh project item-list`) sí puedes usarlos.
+- Cuando cumplas un criterio de aceptación, dime cuál para que yo lo marque en
+  el issue. Cuando el código y sus tests estén listos, dime que puede pasar a
+  `In review`. Pasarlo a `Done` lo decido yo, después de probar y mezclar el PR.
+- Las historias de la funcionalidad que ya existía (UT-H01 a UT-H16) están en
+  docs/HISTORIAS_DE_USUARIO.md.
 - Si durante el trabajo descubres algo nuevo que hacer, propónmelo como historia
-  nueva con el formato del archivo, pero no la agregues sin mi confirmación.
+  nueva con el formato "Como…, quiero…, para…", criterios de aceptación, tipo y
+  prioridad, pero no la crees sin mi confirmación.
 - Incluye el ID de la historia en el mensaje de commit que me sugieras,
   por ejemplo: fix(proxy): escape report_id (UT-05).
 
-  ## Proceso
+## Proceso
 
-- Sigue docs/PROCESO.md: una historia por branch, commits con el formato
-  tipo(ámbito): descripción (UT-XX), y la definición de hecho de ese archivo.
+- Sigue docs/PROCESO.md: una historia por branch, el branch lleva el número del
+  issue (`tipo/N-descripcion`), commits con el formato
+  tipo(ámbito): descripción (UT-XX), el PR usa `Closes #N`, y la definición de
+  hecho de ese archivo. Los estados son los del Project: Backlog, Ready,
+  In progress, In review, Done.
 - Antes de empezar, verifica que el branch actual corresponde a la historia
   que te pido. Si no, avísame en vez de trabajar ahí.
 
